@@ -31,6 +31,15 @@ panel under the sections, and a video theme without a launcher of its own is
 called out there too: `bezel run` draws its poster and nothing more until the
 video is on the screen (`bezel storage put`) or a launcher exists.
 
+### The Backdrop row
+
+Most themes cover their own `background.color` with a full-canvas element called
+Backdrop, so the row paints the bottom-most visible element that covers the
+canvas, and falls back to the theme's own background colour only when no element
+covers it. A picture or a video there is reported as such, with no palette. A
+gradient is painted at its first stop — the row says how many stops there are,
+and the rest are in that element's own colours, under Elements.
+
 ### Only themes this screen can use
 
 The list shows the themes whose canvas is the panel's size, in either
