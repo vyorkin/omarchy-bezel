@@ -521,12 +521,22 @@ def theme_canvas(name: str) -> tuple[int, int] | None:
 
 
 def fitted_canvas(canvas: tuple[int, int] | None, screen: dict | None) -> bool:
-    """Whether a theme of this size fits the screen, in either orientation."""
+    """Whether a theme is drawn the way this screen stands.
+
+    The panel reports its size the way it is mounted (480x1920 here, upright),
+    so a theme of that size *the other way round* is one for a screen lying
+    down: it would come out sideways.
+    """
     if canvas is None or screen is None:
         return True
-    width, height = canvas
-    return (width, height) == (screen["width"], screen["height"]) or \
-        (width, height) == (screen["height"], screen["width"])
+    return canvas == (screen["width"], screen["height"])
+
+
+def rotated_canvas(canvas: tuple[int, int] | None, screen: dict | None) -> bool:
+    """The screen's size turned by a quarter: right size, wrong way up."""
+    if canvas is None or screen is None:
+        return False
+    return canvas == (screen["height"], screen["width"])
 
 
 def use_theme(name: str) -> dict:
@@ -683,7 +693,7 @@ def normalize_hex(value: str) -> str:
 
 
 def theme_rows(*, all_themes: bool = False) -> list[dict]:
-    """Every theme, with what it needs: its size, its launcher, its state."""
+    """Every theme this screen can show, with its size, launcher and state."""
     current = current_theme()
     screen = screen_info()
     rows = []
@@ -700,7 +710,9 @@ def theme_rows(*, all_themes: bool = False) -> list[dict]:
                 background = "unknown"
         canvas = theme_canvas(name)
         fits = fitted_canvas(canvas, screen)
-        if not fits and not all_themes:
+        # A theme for a screen lying down is no use standing up, but the theme
+        # that is on the panel right now is listed whatever its size.
+        if not fits and not all_themes and name != current:
             continue
         unit = launcher_for(name)
         rows.append(
@@ -714,6 +726,7 @@ def theme_rows(*, all_themes: bool = False) -> list[dict]:
                 "background": background,
                 "canvas": f"{canvas[0]}\u00d7{canvas[1]}" if canvas else "",
                 "fits": fits,
+                "rotated": rotated_canvas(canvas, screen),
                 "thumb": str(thumb),
                 "thumbMtime": thumb.stat().st_mtime if thumb.is_file() else 0,
             }
@@ -721,11 +734,22 @@ def theme_rows(*, all_themes: bool = False) -> list[dict]:
     return rows
 
 
+def hidden_counts(screen: dict | None) -> dict:
+    """What the list leaves out: themes for other sizes, and turned ones."""
+    other = rotated = 0
+    for name in theme_names():
+        canvas = theme_canvas(name)
+        if rotated_canvas(canvas, screen):
+            rotated += 1
+        elif not fitted_canvas(canvas, screen):
+            other += 1
+    return {"other": other, "rotated": rotated}
+
+
 def status(*, with_devices: bool = False) -> dict:
     current = current_theme()
     state = read_state()
     screen = screen_info()
-    fitting = theme_rows()
     payload = {
         "theme": current,
         "state": unit_state_of(launcher_for(current)) if current else "absent",
@@ -734,8 +758,8 @@ def status(*, with_devices: bool = False) -> dict:
         "brightness": state.get("brightness", 67),
         "themesDir": str(themes_dir()),
         "screen": screen,
-        "hidden": len(theme_names()) - len(fitting),
-        "themes": fitting,
+        "hidden": hidden_counts(screen),
+        "themes": theme_rows(),
     }
     if with_devices:
         payload["devices"] = device_json()

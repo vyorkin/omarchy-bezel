@@ -42,10 +42,12 @@ and the rest are in that element's own colours, under Elements.
 
 ### Only themes this screen can use
 
-The list shows the themes whose canvas is the panel's size, in either
-orientation (the 8.8" is 480×1920, so `480×1920` and `1920×480` fit). Themes for
-other screens are counted in the line under the sections and stay reachable from
-the command line (`bin/omarchy-bezel themes --all`).
+The list shows the themes whose canvas is the panel's size **the way it stands**
+(480×1920 for the 8.8"). A theme of the same size turned by a quarter was drawn
+for a screen lying down and would come out sideways, so it is left out too; the
+line under the sections counts both kinds, and `bin/omarchy-bezel themes --all`
+lists everything. The theme that is on the panel right now is always listed,
+whatever its size.
 
 The widget itself knows nothing about themes. `bin/omarchy-bezel` reads the same
 theme folders `bezel` reads, edits a theme in place and restarts the unit on it;
@@ -138,35 +140,48 @@ The RGB Control widget, which also talks to the panel, only sets its backlight.
 ## Where more themes come from
 
 `bezel import` turns another app's theme into a Bezel theme, so most of the
-world of Turing/TURZX screens is reachable. The two places worth knowing:
+world of Turing/TURZX screens is reachable:
 
 - [turing-smart-screen-python](https://github.com/mathoudebine/turing-smart-screen-python)
-  ships themes under `res/themes/`; the ones whose `theme.yaml` says
-  `DISPLAY_SIZE: 8.8"` are 1920×480 or 480×1920 and fit this panel;
+  ships themes under `res/themes/`; only the ones whose `theme.yaml` says
+  `DISPLAY_SIZE: 8.8"` are the right size, and of those only `Cyberpunk 2077
+  Vertical` and `Gradient` stand up (the rest are 1920×480, for a screen lying
+  down);
 - `.turtheme` files (the vendor TURZX app's format) import too —
   [TurzxThemeToolkit](https://github.com/breacasu/TurzxThemeToolkit) and
   [davidfdr/turzx-themes](https://github.com/davidfdr/turzx-themes) are sources;
-  a `.turtheme` has no fonts and no video inside it, so those are warnings to
-  read, not failures.
+  a `.turtheme` has no fonts and no video inside it, so those warnings are not
+  failures. Check the canvas after importing: most 8.8"/9.2" vendor themes are
+  drawn landscape;
+- the vendor resources under `res/themes/--Theme examples/8.8inch/` are worth a
+  look for artwork, but most of them have the vendor app's sample values baked
+  into the picture ("88", "8888M"), so they cannot serve as a background as
+  they are. The one exception is `Simple black and white theme`, a clean
+  480×1920 layout of labels: `tools/build-bw-theme.py` turns it into the
+  `bw-vertical-8.8` theme that ships in this machine's theme folder.
 
 ```bash
 cd ~/.local/share/bezel/themes
-git clone --depth 1 https://github.com/mathoudebine/turing-smart-screen-python /tmp/tsx
-bezel import "/tmp/tsx/res/themes/Gradient" --output ./tsx-gradient-8.8
+git clone --depth 1 --filter=blob:none --sparse \
+  https://github.com/mathoudebine/turing-smart-screen-python /tmp/tsx
+cd /tmp/tsx && git sparse-checkout set 'res/themes/Cyberpunk 2077 Vertical'
+bezel import 'res/themes/Cyberpunk 2077 Vertical' --output ~/.local/share/bezel/themes/tsx-cyberpunk-vertical-8.8
 rm -rf /tmp/tsx
 ```
 
 Import into a folder, not into a `.bezeltheme` file: a folder is what this
-widget can edit. Themes imported this way keep their own licence (the
-first-party turing-smart-screen-python themes are GPL-3.0-or-later); they stay
-in `~/.local/share/bezel/themes` and are not part of this repository.
+widget can edit. Imported themes keep their own licence (the first-party
+turing-smart-screen-python themes are GPL-3.0-or-later, the vendor artwork
+belongs to the vendor); they stay in `~/.local/share/bezel/themes` and are not
+part of this repository.
 
 ## Layout of this repository
 
 ```
-manifest.json        the plugin manifest the shell reads
-Panel.qml            the bar widget and its popup
-bin/omarchy-bezel    themes, parameters, systemd unit, preview cache
+manifest.json               the plugin manifest the shell reads
+Panel.qml                   the bar widget and its popup
+bin/omarchy-bezel           themes, parameters, systemd unit, preview cache
+tools/build-bw-theme.py     builds a theme from the vendor 8.8" template
 ```
 
 ## License

@@ -31,7 +31,8 @@ Panel {
   property string current: ""
   property string unit: ""
   property bool ownUnit: false
-  property int hidden: 0
+  property int hiddenOther: 0
+  property int hiddenRotated: 0
   property var screen: null
   property string themesDir: ""
   property string unitState: "absent"
@@ -204,7 +205,8 @@ Panel {
       root.current = state.theme || ""
       root.unit = state.unit || ""
       root.ownUnit = state.ownUnit === true
-      root.hidden = Number(state.hidden) || 0
+      root.hiddenOther = state.hidden ? Number(state.hidden.other) || 0 : 0
+      root.hiddenRotated = state.hidden ? Number(state.hidden.rotated) || 0 : 0
       root.screen = state.screen || null
       root.unitState = state.state || "absent"
       root.brightness = Number(state.brightness)
@@ -264,8 +266,9 @@ Panel {
     root.thumbMtime = next
   }
 
-  // The line under every section: what is driving the panel right now, and how
-  // much of the theme folder this screen cannot use.
+  // The line under every section: what is driving the panel right now, and what
+  // of the theme folder this screen cannot use — a theme for another size, or
+  // one drawn for a screen lying down, which would come out sideways here.
   function footerHint() {
     if (root.mode === "detail")
       return "Changes are written to the theme's theme.json and the screen follows."
@@ -273,10 +276,14 @@ Panel {
     if (root.unit !== "") parts.push("Driven by " + root.unit + ".")
     if (root.currentThemeBackground() === "video" && !root.ownUnit)
       parts.push("Video theme: only its poster is drawn.")
-    if (root.hidden > 0)
-      parts.push(root.hidden + (root.hidden === 1
-        ? " theme for another screen is hidden."
-        : " themes for other screens are hidden."))
+    var hidden = []
+    if (root.hiddenRotated > 0)
+      hidden.push(root.hiddenRotated + (root.hiddenRotated === 1
+        ? " theme turned sideways" : " themes turned sideways"))
+    if (root.hiddenOther > 0)
+      hidden.push(root.hiddenOther + (root.hiddenOther === 1
+        ? " theme for another screen" : " themes for other screens"))
+    if (hidden.length > 0) parts.push(hidden.join(" and ") + " hidden.")
     if (parts.length === 0)
       return "Enter picks a theme, arrows walk the lists, middle click takes the panel off."
     return parts.join(" ")
@@ -647,6 +654,7 @@ Panel {
                 anchors.rightMargin: Style.space(6)
                 text: (modelData.canvas || "")
                   + (modelData.background === "video" ? " · video" : "")
+                  + (modelData.rotated ? " · sideways" : "")
                 color: root.dimText
                 font.family: Style.font.family
                 font.pixelSize: Style.font.caption
