@@ -1,0 +1,688 @@
+#!/usr/bin/env python3
+"""omarchy-bezel - choose the Bezel theme of the case panel and edit its parameters.
+
+The QML widget owns no knowledge of themes: everything goes through this script,
+which reads the theme folders `bezel` itself reads, edits a theme's `theme.json`
+in place (one `.bak` next to it), keeps the case panel on the chosen theme
+through the `bezel-run@<theme>` systemd user unit, and caches the previews the
+widget shows.
+
+Commands (all print JSON with `--json`, which the widget always passes):
+
+  themes                      every theme, with its state and preview
+  status                      the chosen theme plus the themes
+  params <theme>              refresh, orientation, elements, every colour
+  set <theme> PATH=VALUE...   edit the theme, then restart the unit on it
+  use <theme>                 enable --now bezel-run@<theme>, disable the rest
+  stop                        disable every bezel-run@ unit
+  brightness [PERCENT]        the panel's backlight, read from cache when unset
+  thumb <theme>               render and cache one preview
+  thumbs                      render every missing or stale preview
+  palette                     colour presets from the current Omarchy theme
+  devices                     what `bezel devices --json` says
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+MANIFEST = "theme.json"
+MANIFEST_BAK = "theme.json.bak"
+EXTENSION = "bezeltheme"
+THUMB_WIDTH = 96
+UNIT_PREFIX = "bezel-run@"
+ORIENTATIONS = ("portrait", "reverse-portrait", "landscape", "reverse-landscape")
+ORIENTATION_LABELS = {
+    "portrait": "vertical",
+    "reverse-portrait": "vertical flipped",
+    "landscape": "horizontal",
+    "reverse-landscape": "horizontal flipped",
+}
+HEX = re.compile(r"^#[0-9a-fA-F]{3,8}$")
+MIN_REFRESH = 0.25
+MAX_REFRESH = 10.0
+
+
+class CliError(Exception):
+    """A problem worth one line on stderr and a non-zero exit."""
+
+
+# --------------------------------------------------------------------- paths --
+
+
+def home() -> Path:
+    return Path(os.environ.get("HOME") or Path.home())
+
+
+def data_home() -> Path:
+    """The user's data folder, as bezel resolves it (XDG, else ~/.local/share)."""
+    xdg = os.environ.get("XDG_DATA_HOME")
+    return Path(xdg) if xdg else home() / ".local" / "share"
+
+
+def state_dir() -> Path:
+    xdg = os.environ.get("XDG_CACHE_HOME")
+    return (Path(xdg) if xdg else home() / ".cache") / "omarchy-bezel"
+
+
+def themes_dirs() -> list[Path]:
+    """The folders bezel reads themes from, in its order.
+
+    `$BEZEL_THEMES_DIR` wins, then `<bezel>/../share/bezel/themes` (where a
+    local install puts them), then `<data home>/bezel/themes`.
+    """
+    out: list[Path] = []
+    override = os.environ.get("BEZEL_THEMES_DIR")
+    if override:
+        out.append(Path(override))
+    binary = shutil_which("bezel")
+    if binary:
+        out.append(Path(binary).resolve().parent.parent / "share" / "bezel" / "themes")
+    out.append(data_home() / "bezel" / "themes")
+    unique: list[Path] = []
+    for directory in out:
+        if directory not in unique:
+            unique.append(directory)
+    return unique
+
+
+def shutil_which(name: str) -> str | None:
+    for directory in os.environ.get("PATH", "").split(os.pathsep):
+        candidate = Path(directory) / name
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None
+
+
+def themes_dir() -> Path:
+    """The first themes folder that exists, bundled themes' home included."""
+    for directory in themes_dirs():
+        if directory.is_dir():
+            return directory
+    return data_home() / "bezel" / "themes"
+
+
+def theme_names() -> list[str]:
+    """Every theme name in every themes folder, sorted, without repeats."""
+    names: set[str] = set()
+    for directory in themes_dirs():
+        if not directory.is_dir():
+            continue
+        for entry in directory.iterdir():
+            if entry.is_dir() and (entry / MANIFEST).is_file():
+                names.add(entry.name)
+            elif entry.suffix.lower() == f".{EXTENSION}":
+                names.add(entry.stem)
+    return sorted(names)
+
+
+def theme_path(name: str) -> Path:
+    """The folder or zip of the theme `name`, or a path that does not exist."""
+    for directory in themes_dirs():
+        folder = directory / name
+        if (folder / MANIFEST).is_file():
+            return folder
+        archive = directory / f"{name}.{EXTENSION}"
+        if archive.is_file():
+            return archive
+    return themes_dir() / name
+
+
+def thumb_path(name: str) -> Path:
+    return state_dir() / "thumbs" / f"{name}.png"
+
+
+def state_path() -> Path:
+    return state_dir() / "state.json"
+
+
+def read_state() -> dict:
+    try:
+        return json.loads(state_path().read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def write_state(patch: dict) -> None:
+    state = read_state()
+    state.update(patch)
+    state_path().parent.mkdir(parents=True, exist_ok=True)
+    state_path().write_text(json.dumps(state, indent=2) + "\n")
+
+
+# ------------------------------------------------------------------- themes --
+
+
+def load_theme(name: str) -> tuple[Path, dict]:
+    """The theme `name` as parsed JSON. Zips are read-only and refused here."""
+    path = theme_path(name)
+    if path.is_dir():
+        manifest = path / MANIFEST
+    elif path.is_file():
+        raise CliError(f"{name}: a .{EXTENSION} archive is read-only here; unpack it to edit")
+    else:
+        raise CliError(f"no theme at {name}; themes: {', '.join(theme_names()) or 'none'}")
+    try:
+        return path, json.loads(manifest.read_text())
+    except (OSError, ValueError) as error:
+        raise CliError(f"cannot read {manifest}: {error}") from error
+
+
+def save_theme(path: Path, theme: dict) -> None:
+    """Write the theme back, keeping the first copy of the file as a backup."""
+    manifest = path / MANIFEST
+    if not (path / MANIFEST_BAK).exists():
+        (path / MANIFEST_BAK).write_bytes(manifest.read_bytes())
+    manifest.write_text(json.dumps(theme, indent=2, ensure_ascii=False) + "\n")
+
+
+def walk(node, prefix: str = ""):
+    """Every (dotted path, value) pair in `node`, depth first."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            yield from walk(value, f"{prefix}.{key}" if prefix else key)
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            yield from walk(value, f"{prefix}.{index}" if prefix else str(index))
+    else:
+        yield prefix, node
+
+
+def colors_in(theme: dict) -> list[dict]:
+    """Every colour in the theme, with the path that addresses it."""
+    found = []
+    for path, value in walk(theme):
+        if isinstance(value, str) and HEX.match(value):
+            found.append({"path": path, "value": value})
+    return found
+
+
+def element_entries(theme: dict) -> list[dict]:
+    """One entry per element: what the widget needs to list and edit it."""
+    entries = []
+    for index, element in enumerate(theme.get("elements", [])):
+        kind = element.get("kind", {})
+        style = kind.get("style", {}) if isinstance(kind.get("style"), dict) else {}
+        entries.append(
+            {
+                "index": index,
+                "id": element.get("id"),
+                "name": element.get("name", f"element {index}"),
+                "type": kind.get("type", "unknown"),
+                "visible": element.get("visible", True),
+                "opacity": element.get("opacity", 1.0),
+                "size": style.get("size"),
+                "colors": [
+                    color
+                    for color in colors_in({"kind": kind})
+                    if color["path"].startswith("kind.")
+                ],
+                "paths": {"visible": f"elements.{index}.visible",
+                          "opacity": f"elements.{index}.opacity",
+                          "size": f"elements.{index}.kind.style.size"},
+            }
+        )
+    return entries
+
+
+def read_params(name: str) -> dict:
+    path, theme = load_theme(name)
+    return {
+        "theme": name,
+        "path": str(path),
+        "refreshSeconds": theme.get("refreshSeconds", 1.0),
+        "orientation": theme.get("orientation", "portrait"),
+        "orientationLabel": ORIENTATION_LABELS.get(
+            theme.get("orientation", "portrait"), theme.get("orientation", "")
+        ),
+        "backgroundType": (theme.get("background") or {}).get("type", "color"),
+        "backgroundColors": [
+            color
+            for color in colors_in({"background": theme.get("background")})
+            if color["path"].startswith("background.")
+        ],
+        "elements": element_entries(theme),
+    }
+
+
+def set_path(theme: dict, path: str, raw: str) -> tuple[str, object]:
+    """Write `raw` at the dotted `path` of `theme`, as JSON when it parses."""
+    keys = path.split(".")
+    node = theme
+    for key in keys[:-1]:
+        if isinstance(node, list):
+            node = node[int(key)]
+        elif isinstance(node, dict):
+            if key not in node:
+                raise CliError(f"no such field: {path}")
+            node = node[key]
+        else:
+            raise CliError(f"no such field: {path}")
+    last = keys[-1]
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        if not isinstance(node, dict):
+            raise CliError(f"{path}: a text value does not fit here")
+        value = raw
+    if isinstance(node, list):
+        index = int(last)
+        if index >= len(node):
+            raise CliError(f"no such field: {path}")
+        node[index] = value
+    elif isinstance(node, dict):
+        if last not in node:
+            raise CliError(f"no such field: {path}")
+        node[last] = value
+    else:
+        raise CliError(f"no such field: {path}")
+    return path, value
+
+
+def set_refresh(theme: dict, raw: str) -> tuple[str, object]:
+    try:
+        seconds = float(raw)
+    except ValueError as error:
+        raise CliError(f"refreshSeconds: not a number: {raw}") from error
+    seconds = max(MIN_REFRESH, min(MAX_REFRESH, seconds))
+    theme["refreshSeconds"] = round(seconds, 2)
+    return "refreshSeconds", theme["refreshSeconds"]
+
+
+def set_orientation(theme: dict, raw: str) -> tuple[str, object]:
+    if raw not in ORIENTATIONS:
+        raise CliError(f"orientation: one of {', '.join(ORIENTATIONS)}")
+    theme["orientation"] = raw
+    return "orientation", raw
+
+
+# ------------------------------------------------------------------ systemd --
+
+
+def systemctl(*args: str, timeout: float = 10.0) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["systemctl", "--user", *args],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+
+
+def unit_state(name: str) -> str:
+    """active, inactive, masked or absent for the theme's unit."""
+    result = systemctl(
+        "show", "-p", "ActiveState", "-p", "UnitFileState", f"{UNIT_PREFIX}{name}.service"
+    )
+    if result.returncode != 0:
+        return "absent"
+    fields = dict(
+        line.split("=", 1) for line in result.stdout.splitlines() if "=" in line
+    )
+    if fields.get("UnitFileState") == "masked":
+        return "masked"
+    if fields.get("ActiveState") in ("active", "activating"):
+        return "active"
+    return "inactive"
+
+
+def enabled_themes() -> list[str]:
+    """Themes whose unit is enabled, read from the wants symlinks."""
+    found: set[str] = set()
+    user_units = Path(os.environ.get("XDG_CONFIG_HOME") or home() / ".config") / "systemd" / "user"
+    for wants in user_units.glob("*.wants"):
+        for link in wants.glob(f"{UNIT_PREFIX}*.service"):
+            found.add(link.name[len(UNIT_PREFIX):-len(".service")])
+    for entry in user_units.glob(f"{UNIT_PREFIX}*.service"):
+        # A symlink to /dev/null is a mask, not a choice of theme.
+        if entry.is_symlink() and entry.resolve() != Path("/dev/null"):
+            found.add(entry.name[len(UNIT_PREFIX):-len(".service")])
+    return sorted(found)
+
+
+def current_theme() -> str | None:
+    """The theme the panel is on: an active unit, else the enabled one, else ours."""
+    names = theme_names()
+    for name in names:
+        if unit_state(name) == "active":
+            return name
+    enabled = [name for name in enabled_themes() if name in names]
+    if enabled:
+        return enabled[0]
+    remembered = read_state().get("theme")
+    if remembered in names:
+        return remembered
+    # With no unit and no memory, the theme touched last is the best guess:
+    # that is the one the studio or a terminal was working on.
+    if names:
+        return max(names, key=lambda name: theme_manifest(name).stat().st_mtime)
+    return None
+
+
+def theme_manifest(name: str) -> Path:
+    """The file whose timestamp says when a theme was last changed."""
+    path = theme_path(name)
+    return path / MANIFEST if path.is_dir() else path
+
+
+def use_theme(name: str) -> dict:
+    """Hand the panel to `name`: unmask it if needed, then enable --now it."""
+    if name not in theme_names():
+        raise CliError(f"no theme at {name}")
+    for other in enabled_themes():
+        if other != name:
+            systemctl("disable", "--now", f"{UNIT_PREFIX}{other}.service")
+    if unit_state(name) == "masked":
+        systemctl("unmask", f"{UNIT_PREFIX}{name}.service")
+    result = systemctl("enable", "--now", f"{UNIT_PREFIX}{name}.service")
+    if result.returncode != 0:
+        raise CliError(f"cannot start the theme {name}: {(result.stderr or '').strip()}")
+    write_state({"theme": name})
+    return {"theme": name, "state": unit_state(name)}
+
+
+def stop_theme() -> dict:
+    stopped = enabled_themes()
+    for name in stopped:
+        systemctl("disable", "--now", f"{UNIT_PREFIX}{name}.service")
+    return {"stopped": stopped}
+
+
+def restart_if_live(name: str) -> bool:
+    """Restart the unit when it is the one running this theme."""
+    if unit_state(name) != "active":
+        return False
+    systemctl("try-restart", f"{UNIT_PREFIX}{name}.service")
+    return True
+
+
+# ------------------------------------------------------------------- thumbs --
+
+
+def render_theme(name: str, *, force: bool = False) -> dict:
+    """Render `name` with demo values into the preview cache, if it is stale."""
+    out = thumb_path(name)
+    manifest = theme_manifest(name)
+    if (
+        not force
+        and out.is_file()
+        and out.stat().st_mtime >= manifest.stat().st_mtime
+    ):
+        return {"theme": name, "path": str(out), "ok": True,
+                "mtime": out.stat().st_mtime, "cached": True}
+    binary = shutil_which("bezel")
+    if not binary:
+        return {"theme": name, "ok": False, "error": "bezel is not on the PATH"}
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory() as scratch:
+        full = Path(scratch) / "render.png"
+        result = subprocess.run(
+            [binary, "--fake", "render", name, "-o", str(full)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode != 0 or not full.is_file():
+            return {
+                "theme": name,
+                "ok": False,
+                "error": (result.stderr or result.stdout or "render failed").strip(),
+            }
+        scaled = scale(full, out)
+    if not scaled:
+        return {"theme": name, "ok": False, "error": "cannot write the preview"}
+    return {"theme": name, "path": str(out), "ok": True,
+            "mtime": out.stat().st_mtime}
+
+
+def scale(source: Path, out: Path) -> bool:
+    """Shrink a preview to THUMB_WIDTH, through ImageMagick, ffmpeg or not at all."""
+    magick = shutil_which("magick") or shutil_which("convert")
+    if magick:
+        result = subprocess.run(
+            [magick, str(source), "-strip", "-resize", f"{THUMB_WIDTH}x", str(out)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode == 0:
+            return True
+    ffmpeg = shutil_which("ffmpeg")
+    if ffmpeg:
+        result = subprocess.run(
+            [ffmpeg, "-y", "-loglevel", "error", "-i", str(source),
+             "-vf", f"scale={THUMB_WIDTH}:-1", str(out)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode == 0:
+            return True
+    # Without a scaler, the widget still gets a preview: it decodes the full one.
+    try:
+        out.write_bytes(source.read_bytes())
+        return True
+    except OSError:
+        return False
+
+
+def all_thumbs(force: bool) -> None:
+    """Render every stale preview, one JSON line per theme as it lands."""
+    names = theme_names()
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        for result in pool.map(lambda name: render_theme(name, force=force), names):
+            print(json.dumps(result), flush=True)
+
+
+# ------------------------------------------------------------------ palettes --
+
+
+def palette() -> list[dict]:
+    """Colour presets: the current Omarchy theme's palette, else the theme colours."""
+    path = Path(
+        os.environ.get("XDG_STATE_HOME") or home() / ".local" / "state"
+    ) / "omarchy" / "current" / "theme" / "colors.toml"
+    presets: list[dict] = []
+    try:
+        text = path.read_text()
+    except OSError:
+        return presets
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        value = value.strip().strip('"')
+        if HEX.match(value):
+            presets.append({"name": key.strip(), "value": normalize_hex(value)})
+    return presets
+
+
+def normalize_hex(value: str) -> str:
+    """A colour the theme format writes: #rrggbbaa."""
+    hexed = value.lstrip("#")
+    if len(hexed) == 3:
+        hexed = "".join(character * 2 for character in hexed)
+    if len(hexed) == 6:
+        hexed += "ff"
+    return "#" + hexed.lower()
+
+
+# ------------------------------------------------------------------- verbs --
+
+
+def theme_rows() -> list[dict]:
+    current = current_theme()
+    rows = []
+    for name in theme_names():
+        path = theme_path(name)
+        thumb = thumb_path(name)
+        rows.append(
+            {
+                "name": name,
+                "path": str(path),
+                "current": name == current,
+                "state": unit_state(name),
+                "thumb": str(thumb),
+                "thumbMtime": thumb.stat().st_mtime if thumb.is_file() else 0,
+            }
+        )
+    return rows
+
+
+def status(*, with_devices: bool = False) -> dict:
+    current = current_theme()
+    state = read_state()
+    payload = {
+        "theme": current,
+        "state": unit_state(current) if current else "absent",
+        "brightness": state.get("brightness", 67),
+        "themesDir": str(themes_dir()),
+        "themes": theme_rows(),
+    }
+    if with_devices:
+        payload["devices"] = device_json()
+    return payload
+
+
+def device_json():
+    binary = shutil_which("bezel")
+    if not binary:
+        return []
+    result = subprocess.run(
+        [binary, "--json", "devices"], capture_output=True, text=True, timeout=30
+    )
+    try:
+        return json.loads(result.stdout)
+    except ValueError:
+        return []
+
+
+def brightness(percent: int | None) -> dict:
+    if percent is None:
+        return {"brightness": read_state().get("brightness", 67)}
+    percent = max(0, min(100, int(percent)))
+    binary = shutil_which("bezel")
+    if not binary:
+        raise CliError("bezel is not on the PATH")
+    result = subprocess.run(
+        [binary, "brightness", str(percent)], capture_output=True, text=True, timeout=30
+    )
+    if result.returncode != 0:
+        raise CliError((result.stderr or "bezel brightness failed").strip())
+    write_state({"brightness": percent})
+    return {"brightness": percent}
+
+
+def apply_changes(name: str, specs: list[str], restart: bool) -> dict:
+    """Edit the theme at `name`, then put it back on the screen when it is live."""
+    path, theme = load_theme(name)
+    edits: list[tuple[str, object]] = []
+    backlight: int | None = None
+    for spec in specs:
+        key, separator, raw = spec.partition("=")
+        if not separator:
+            raise CliError(f"not a setting: {spec}")
+        if key == "refresh":
+            edits.append(set_refresh(theme, raw))
+        elif key == "orientation":
+            edits.append(set_orientation(theme, raw))
+        elif key == "brightness":
+            backlight = max(0, min(100, int(float(raw))))
+        else:
+            edits.append(set_path(theme, key, raw))
+    if edits:
+        save_theme(path, theme)
+    changed = list(edits)
+    if backlight is not None:
+        brightness(backlight)
+        changed.append(("brightness", backlight))
+    # Only a theme edit needs the screen restarted and the preview redrawn.
+    restarted = restart_if_live(name) if (edits and restart) else False
+    thumb = render_theme(name, force=True) if edits else None
+    return {
+        "theme": name,
+        "changed": [{"path": key, "value": value} for key, value in changed],
+        "restarted": restarted,
+        "thumb": thumb,
+    }
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="omarchy-bezel", description=__doc__)
+    parser.add_argument("--json", action="store_true", help="print JSON (default)")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    subparsers.add_parser("themes")
+    status_parser = subparsers.add_parser("status")
+    status_parser.add_argument("--devices", action="store_true")
+
+    params_parser = subparsers.add_parser("params")
+    params_parser.add_argument("theme")
+
+    set_parser = subparsers.add_parser("set")
+    set_parser.add_argument("theme")
+    set_parser.add_argument("specs", nargs="+")
+    set_parser.add_argument("--no-restart", action="store_true")
+
+    use_parser = subparsers.add_parser("use")
+    use_parser.add_argument("theme")
+
+    subparsers.add_parser("stop")
+
+    brightness_parser = subparsers.add_parser("brightness")
+    brightness_parser.add_argument("percent", nargs="?")
+
+    thumb_parser = subparsers.add_parser("thumb")
+    thumb_parser.add_argument("theme")
+    thumb_parser.add_argument("--force", action="store_true")
+
+    thumbs_parser = subparsers.add_parser("thumbs")
+    thumbs_parser.add_argument("--force", action="store_true")
+
+    subparsers.add_parser("palette")
+    subparsers.add_parser("devices")
+
+    args = parser.parse_args(argv)
+    try:
+        if args.command == "themes":
+            print(json.dumps(theme_rows(), indent=2))
+        elif args.command == "status":
+            print(json.dumps(status(with_devices=args.devices), indent=2))
+        elif args.command == "params":
+            print(json.dumps(read_params(args.theme), indent=2))
+        elif args.command == "set":
+            print(json.dumps(
+                apply_changes(args.theme, args.specs, not args.no_restart), indent=2))
+        elif args.command == "use":
+            print(json.dumps(use_theme(args.theme), indent=2))
+        elif args.command == "stop":
+            print(json.dumps(stop_theme(), indent=2))
+        elif args.command == "brightness":
+            print(json.dumps(brightness(args.percent), indent=2))
+        elif args.command == "thumb":
+            print(json.dumps(render_theme(args.theme, force=args.force), indent=2))
+        elif args.command == "thumbs":
+            all_thumbs(args.force)
+        elif args.command == "palette":
+            print(json.dumps(palette(), indent=2))
+        elif args.command == "devices":
+            print(json.dumps(device_json(), indent=2))
+    except CliError as error:
+        print(f"omarchy-bezel: {error}", file=sys.stderr)
+        return 1
+    except subprocess.TimeoutExpired:
+        print("omarchy-bezel: the screen did not answer in time", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
