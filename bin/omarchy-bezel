@@ -233,6 +233,60 @@ def element_entries(theme: dict) -> list[dict]:
     return entries
 
 
+def backdrop_info(theme: dict) -> dict:
+    """What the eye sees behind everything, and the colours that paint it.
+
+    Most themes carry a full-canvas element ("Backdrop") above the theme's own
+    background colour, so the colour the theme declares is often invisible:
+    painting it changes nothing on the screen. The bottom-most element that
+    covers the whole canvas decides. Only when no element does is the theme's
+    own background the thing to paint.
+    """
+    canvas = theme.get("canvas") or {}
+    width = float(canvas.get("width", 0) or 0)
+    height = float(canvas.get("height", 0) or 0)
+    for index, element in enumerate(theme.get("elements", [])):
+        if element.get("visible", True) is False:
+            continue
+        frame = element.get("frame") or {}
+        covers = (
+            float(frame.get("x", 0) or 0) <= 1.0
+            and float(frame.get("y", 0) or 0) <= 1.0
+            and float(frame.get("width", 0) or 0) >= width - 1.0
+            and float(frame.get("height", 0) or 0) >= height - 1.0
+        )
+        if not covers:
+            continue
+        colors = [
+            color
+            for color in colors_in({"kind": element.get("kind")})
+            if color["path"].startswith("kind.")
+        ]
+        if not colors:
+            # A picture or a video covers everything: there is no colour to paint.
+            return {"source": "picture", "label": element.get("name", "Backdrop"),
+                    "elementIndex": index, "colors": []}
+        return {
+            "source": "element",
+            "label": element.get("name", f"element {index}"),
+            "elementIndex": index,
+            "colors": [
+                {"path": f"elements.{index}.{color['path']}", "value": color["value"]}
+                for color in colors
+            ],
+        }
+    background = theme.get("background") or {}
+    colors = [
+        color
+        for color in colors_in({"background": background})
+        if color["path"].startswith("background.")
+    ]
+    if colors:
+        return {"source": "color", "label": "Background",
+                "elementIndex": None, "colors": colors}
+    return {"source": "none", "label": "Backdrop", "elementIndex": None, "colors": []}
+
+
 def read_params(name: str) -> dict:
     path, theme = load_theme(name)
     background = theme.get("background") or {}
@@ -245,40 +299,43 @@ def read_params(name: str) -> dict:
             theme.get("orientation", "portrait"), theme.get("orientation", "")
         ),
         "backgroundType": background.get("type", "color"),
-        "backgroundColors": [
-            color
-            for color in colors_in({"background": background})
-            if color["path"].startswith("background.")
-        ],
+        "backdrop": backdrop_info(theme),
         "elements": element_entries(theme),
     }
 
 
 def set_path(theme: dict, path: str, raw: str) -> tuple[str, object]:
-    """Write `raw` at the dotted `path` of `theme`, as JSON when it parses."""
+    """Write `raw` at the dotted `path` of `theme`, as JSON when it parses.
+
+    A value that is not JSON stays a string, which is what a colour
+    (`#rrggbbaa`) is: the field may be a plain string, or a stop inside a
+    gradient's list.
+    """
     keys = path.split(".")
     node = theme
     for key in keys[:-1]:
-        if isinstance(node, list):
-            node = node[int(key)]
-        elif isinstance(node, dict):
-            if key not in node:
+        try:
+            if isinstance(node, list):
+                node = node[int(key)]
+            elif isinstance(node, dict):
+                node = node[key]
+            else:
                 raise CliError(f"no such field: {path}")
-            node = node[key]
-        else:
-            raise CliError(f"no such field: {path}")
+        except (IndexError, KeyError, ValueError):
+            raise CliError(f"no such field: {path}") from None
     last = keys[-1]
     try:
         value = json.loads(raw)
     except ValueError:
-        if not isinstance(node, dict):
-            raise CliError(f"{path}: a text value does not fit here")
         value = raw
     if isinstance(node, list):
-        index = int(last)
-        if index >= len(node):
-            raise CliError(f"no such field: {path}")
-        node[index] = value
+        try:
+            index = int(last)
+            if index >= len(node):
+                raise CliError(f"no such field: {path}")
+            node[index] = value
+        except ValueError:
+            raise CliError(f"no such field: {path}") from None
     elif isinstance(node, dict):
         if last not in node:
             raise CliError(f"no such field: {path}")

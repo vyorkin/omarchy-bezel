@@ -40,7 +40,7 @@ Panel {
   property string orientation: "portrait"
   property string backgroundType: "color"
   property var elements: []
-  property var backgroundColors: []
+  property var backdrop: ({ source: "none", label: "Backdrop", colors: [] })
   property var palette: []
   property bool busy: false
   property string errorText: ""
@@ -61,6 +61,9 @@ Panel {
   property int paletteCursor: 0
   // Path inside the element of the colour a palette click paints.
   property string colorPath: ""
+  // The preset the user just clicked, so the outline moves before the write
+  // lands and the theme is re-read.
+  property int palettePick: -1
 
   readonly property string pluginDir: decodeURIComponent(
     String(Qt.resolvedUrl(".")).replace(/^file:\/\//, "").replace(/\/$/, ""))
@@ -227,10 +230,9 @@ Panel {
       root.refreshSeconds = Number(params.refreshSeconds)
       root.orientation = params.orientation || "portrait"
       root.backgroundType = params.backgroundType || "color"
-      root.backgroundColors = params.backgroundColors || []
+      root.backdrop = params.backdrop || ({ source: "none", label: "Backdrop", colors: [] })
+      root.palettePick = -1
       root.elements = params.elements || []
-      if (!root.colorPath && root.backgroundColors.length > 0)
-        root.colorPath = root.backgroundColors[0].path
     } catch (error) {
       root.errorText = "cannot read the theme"
     }
@@ -307,8 +309,8 @@ Panel {
   function colorValueOf(path) {
     if (!path) return ""
     var i
-    for (i = 0; i < root.backgroundColors.length; i++)
-      if (root.backgroundColors[i].path === path) return root.backgroundColors[i].value
+    for (i = 0; i < root.backdrop.colors.length; i++)
+      if (root.backdrop.colors[i].path === path) return root.backdrop.colors[i].value
     for (i = 0; i < root.elements.length; i++) {
       var element = root.elements[i]
       for (var j = 0; j < element.colors.length; j++) {
@@ -796,15 +798,15 @@ Panel {
 
           Text {
             Layout.fillWidth: true
-            text: "Backdrop"
-            color: root.backgroundColors.length > 0 ? root.textColor : root.dimText
+            text: root.backdrop.label ? root.backdrop.label : "Backdrop"
+            color: root.backdrop.colors.length > 0 ? root.textColor : root.dimText
             font.family: Style.font.family
             font.pixelSize: Style.font.bodySmall
             textFormat: Text.PlainText
           }
 
           Text {
-            visible: root.backgroundColors.length === 0
+            visible: root.backdrop.colors.length === 0
             text: "picture or video"
             color: root.dimText
             font.family: Style.font.family
@@ -812,14 +814,28 @@ Panel {
             textFormat: Text.PlainText
           }
 
+          // A gradient has more than one stop and the palette paints the first;
+          // the others are in Elements, under the element's own colours.
+          Text {
+            visible: root.backdrop.colors.length > 1
+            text: root.backdrop.colors.length + " stops"
+            color: root.dimText
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+            textFormat: Text.PlainText
+          }
+
           PaletteStrip {
-            visible: root.backgroundColors.length > 0
+            visible: root.backdrop.colors.length > 0
             colors: root.palette
-            selectedIndex: root.backgroundColors.length > 0
-              ? root.paletteIndexFor(root.backgroundColors[0].value) : -1
-            onPicked: function(value) {
-              if (root.backgroundColors.length > 0)
-                root.paint(root.backgroundColors[0].path, value)
+            selectedIndex: root.palettePick >= 0
+              ? root.palettePick
+              : (root.backdrop.colors.length > 0
+                 ? root.paletteIndexFor(root.backdrop.colors[0].value) : -1)
+            onPicked: function(value, index) {
+              root.palettePick = index
+              if (root.backdrop.colors.length > 0)
+                root.paint(root.backdrop.colors[0].path, value)
             }
           }
         }
