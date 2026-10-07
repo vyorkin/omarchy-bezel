@@ -19,8 +19,9 @@ The widget itself knows nothing about themes. `bin/omarchy-bezel` reads the same
 theme folders `bezel` reads, edits a theme in place and restarts the unit on it;
 one `theme.json.bak` is kept next to the original the first time a theme is
 edited. Because every read goes to disk, the popup, Bezel Studio and a terminal
-can never disagree for long — press the glyph again after editing in the studio
-and the values are current.
+can never disagree for long — the glyph is corrected on a slow timer as well as
+on every open, so taking the screen over from Bezel Studio's **Live** switch
+shows up in the bar within half a minute.
 
 Deliberately out of scope: **creating themes** (that is Bezel Studio's job, with
 a canvas, widgets and undo), and **themes stored as `.bezeltheme` archives**,
