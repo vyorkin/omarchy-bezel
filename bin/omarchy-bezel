@@ -235,6 +235,7 @@ def element_entries(theme: dict) -> list[dict]:
 
 def read_params(name: str) -> dict:
     path, theme = load_theme(name)
+    background = theme.get("background") or {}
     return {
         "theme": name,
         "path": str(path),
@@ -243,10 +244,10 @@ def read_params(name: str) -> dict:
         "orientationLabel": ORIENTATION_LABELS.get(
             theme.get("orientation", "portrait"), theme.get("orientation", "")
         ),
-        "backgroundType": (theme.get("background") or {}).get("type", "color"),
+        "backgroundType": background.get("type", "color"),
         "backgroundColors": [
             color
-            for color in colors_in({"background": theme.get("background")})
+            for color in colors_in({"background": background})
             if color["path"].startswith("background.")
         ],
         "elements": element_entries(theme),
@@ -316,11 +317,90 @@ def systemctl(*args: str, timeout: float = 10.0) -> subprocess.CompletedProcess:
     )
 
 
-def unit_state(name: str) -> str:
-    """active, inactive, masked or absent for the theme's unit."""
-    result = systemctl(
-        "show", "-p", "ActiveState", "-p", "UnitFileState", f"{UNIT_PREFIX}{name}.service"
-    )
+def service_units() -> set[str]:
+    """Every user unit systemd knows by name, read once per run."""
+    global _SERVICE_UNITS
+    if _SERVICE_UNITS is None:
+        result = systemctl("list-unit-files", "--type=service", "--no-legend", "--plain")
+        _SERVICE_UNITS = {
+            line.split()[0]
+            for line in (result.stdout or "").splitlines()
+            if line.split()
+        }
+    return _SERVICE_UNITS
+
+
+_SERVICE_UNITS: set[str] | None = None
+_DEVICES: list | None = None
+
+
+def device_json():
+    """What `bezel devices --json` says, read once per run."""
+    global _DEVICES
+    if _DEVICES is None:
+        binary = shutil_which("bezel")
+        if not binary:
+            _DEVICES = []
+        else:
+            result = subprocess.run(
+                [binary, "devices", "--json"], capture_output=True, text=True, timeout=30
+            )
+            try:
+                _DEVICES = json.loads(result.stdout)
+            except ValueError:
+                _DEVICES = []
+    return _DEVICES
+
+
+def screen_info() -> dict | None:
+    """The screen the themes are made for: its model and its size."""
+    for device in device_json():
+        models = device.get("models") or []
+        if not models:
+            continue
+        model = models[0]
+        return {
+            "id": model.get("id"),
+            "name": model.get("name"),
+            "width": int(model.get("width", 0)),
+            "height": int(model.get("height", 0)),
+            "state": device.get("state"),
+        }
+    return None
+
+
+# A theme may bring its own launcher: a user unit named after the theme that
+# runs something else than `bezel run` — a stream of H.264 frames, a script, a
+# generator. The unit must mention bezel or the theme folder, so a service that
+# merely shares the theme's name is left alone.
+def launcher_unit(name: str) -> str | None:
+    unit = f"{name}.service"
+    if unit not in service_units():
+        return None
+    result = systemctl("show", "-p", "ExecStart", "--value", unit)
+    text = (result.stdout or "").lower()
+    if "bezel" in text or name.lower() in text:
+        return unit
+    return None
+
+
+def launcher_for(name: str) -> str:
+    """The unit that puts a theme on the screen: its own, or bezel-run@<theme>."""
+    return launcher_unit(name) or f"{UNIT_PREFIX}{name}.service"
+
+
+def launcher_states() -> list[tuple[str, str, str]]:
+    """Every launcher this plugin may own: (theme, unit, state)."""
+    found = []
+    for name in theme_names():
+        unit = launcher_for(name)
+        found.append((name, unit, unit_state_of(unit)))
+    return found
+
+
+def unit_state_of(unit: str) -> str:
+    """active, inactive, masked or absent for a unit this plugin may own."""
+    result = systemctl("show", "-p", "ActiveState", "-p", "UnitFileState", unit)
     if result.returncode != 0:
         return "absent"
     fields = dict(
@@ -348,10 +428,10 @@ def enabled_themes() -> list[str]:
 
 
 def current_theme() -> str | None:
-    """The theme the panel is on: an active unit, else the enabled one, else ours."""
+    """The theme the panel is on: a running launcher, else the enabled one, else ours."""
     names = theme_names()
     for name in names:
-        if unit_state(name) == "active":
+        if unit_state_of(launcher_for(name)) == "active":
             return name
     enabled = [name for name in enabled_themes() if name in names]
     if enabled:
@@ -359,7 +439,7 @@ def current_theme() -> str | None:
     remembered = read_state().get("theme")
     if remembered in names:
         return remembered
-    # With no unit and no memory, the theme touched last is the best guess:
+    # With no launcher and no memory, the theme touched last is the best guess:
     # that is the one the studio or a terminal was working on.
     if names:
         return max(names, key=lambda name: theme_manifest(name).stat().st_mtime)
@@ -372,34 +452,61 @@ def theme_manifest(name: str) -> Path:
     return path / MANIFEST if path.is_dir() else path
 
 
+def theme_canvas(name: str) -> tuple[int, int] | None:
+    """The size a theme was drawn for, in the units the screen reports."""
+    if theme_path(name).is_file():
+        return None
+    try:
+        canvas = json.loads(theme_manifest(name).read_text()).get("canvas") or {}
+        return int(canvas["width"]), int(canvas["height"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def fitted_canvas(canvas: tuple[int, int] | None, screen: dict | None) -> bool:
+    """Whether a theme of this size fits the screen, in either orientation."""
+    if canvas is None or screen is None:
+        return True
+    width, height = canvas
+    return (width, height) == (screen["width"], screen["height"]) or \
+        (width, height) == (screen["height"], screen["width"])
+
+
 def use_theme(name: str) -> dict:
-    """Hand the panel to `name`: unmask it if needed, then enable --now it."""
+    """Hand the panel to `name` through its own launcher, stopping the others."""
     if name not in theme_names():
         raise CliError(f"no theme at {name}")
-    for other in enabled_themes():
-        if other != name:
-            systemctl("disable", "--now", f"{UNIT_PREFIX}{other}.service")
-    if unit_state(name) == "masked":
-        systemctl("unmask", f"{UNIT_PREFIX}{name}.service")
-    result = systemctl("enable", "--now", f"{UNIT_PREFIX}{name}.service")
+    target = launcher_for(name)
+    for other, unit, state in launcher_states():
+        if unit == target or state == "absent":
+            continue
+        if state != "inactive":
+            systemctl("disable", "--now", unit)
+    if unit_state_of(target) == "masked":
+        systemctl("unmask", target)
+    result = systemctl("enable", "--now", target)
     if result.returncode != 0:
         raise CliError(f"cannot start the theme {name}: {(result.stderr or '').strip()}")
     write_state({"theme": name})
-    return {"theme": name, "state": unit_state(name)}
+    return {"theme": name, "unit": target, "state": unit_state_of(target)}
 
 
 def stop_theme() -> dict:
-    stopped = enabled_themes()
-    for name in stopped:
-        systemctl("disable", "--now", f"{UNIT_PREFIX}{name}.service")
+    """Take the panel off the screen: stop every launcher of every theme."""
+    stopped = []
+    for name, unit, state in launcher_states():
+        if state in ("active", "inactive"):
+            systemctl("disable", "--now", unit)
+            stopped.append(name)
     return {"stopped": stopped}
 
 
 def restart_if_live(name: str) -> bool:
-    """Restart the unit when it is the one running this theme."""
-    if unit_state(name) != "active":
+    """Restart the theme's launcher when it is running, so edits show up."""
+    unit = launcher_for(name)
+    if unit_state_of(unit) != "active":
         return False
-    systemctl("try-restart", f"{UNIT_PREFIX}{name}.service")
+    systemctl("try-restart", unit)
     return True
 
 
@@ -475,7 +582,7 @@ def scale(source: Path, out: Path) -> bool:
 
 def all_thumbs(force: bool) -> None:
     """Render every stale preview, one JSON line per theme as it lands."""
-    names = theme_names()
+    names = [row["name"] for row in theme_rows()]
     with ThreadPoolExecutor(max_workers=4) as pool:
         for result in pool.map(lambda name: render_theme(name, force=force), names):
             print(json.dumps(result), flush=True)
@@ -518,18 +625,38 @@ def normalize_hex(value: str) -> str:
 # ------------------------------------------------------------------- verbs --
 
 
-def theme_rows() -> list[dict]:
+def theme_rows(*, all_themes: bool = False) -> list[dict]:
+    """Every theme, with what it needs: its size, its launcher, its state."""
     current = current_theme()
+    screen = screen_info()
     rows = []
     for name in theme_names():
         path = theme_path(name)
         thumb = thumb_path(name)
+        if not (path / MANIFEST).is_file():
+            background = "archive"
+        else:
+            try:
+                background = (json.loads((path / MANIFEST).read_text())
+                              .get("background") or {}).get("type", "color")
+            except (OSError, ValueError):
+                background = "unknown"
+        canvas = theme_canvas(name)
+        fits = fitted_canvas(canvas, screen)
+        if not fits and not all_themes:
+            continue
+        unit = launcher_for(name)
         rows.append(
             {
                 "name": name,
                 "path": str(path),
                 "current": name == current,
-                "state": unit_state(name),
+                "state": unit_state_of(unit),
+                "unit": unit,
+                "ownUnit": launcher_unit(name) is not None,
+                "background": background,
+                "canvas": f"{canvas[0]}\u00d7{canvas[1]}" if canvas else "",
+                "fits": fits,
                 "thumb": str(thumb),
                 "thumbMtime": thumb.stat().st_mtime if thumb.is_file() else 0,
             }
@@ -540,29 +667,22 @@ def theme_rows() -> list[dict]:
 def status(*, with_devices: bool = False) -> dict:
     current = current_theme()
     state = read_state()
+    screen = screen_info()
+    fitting = theme_rows()
     payload = {
         "theme": current,
-        "state": unit_state(current) if current else "absent",
+        "state": unit_state_of(launcher_for(current)) if current else "absent",
+        "unit": launcher_for(current) if current else "",
+        "ownUnit": launcher_unit(current) is not None if current else False,
         "brightness": state.get("brightness", 67),
         "themesDir": str(themes_dir()),
-        "themes": theme_rows(),
+        "screen": screen,
+        "hidden": len(theme_names()) - len(fitting),
+        "themes": fitting,
     }
     if with_devices:
         payload["devices"] = device_json()
     return payload
-
-
-def device_json():
-    binary = shutil_which("bezel")
-    if not binary:
-        return []
-    result = subprocess.run(
-        [binary, "--json", "devices"], capture_output=True, text=True, timeout=30
-    )
-    try:
-        return json.loads(result.stdout)
-    except ValueError:
-        return []
 
 
 def brightness(percent: int | None) -> dict:
@@ -620,7 +740,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--json", action="store_true", help="print JSON (default)")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    subparsers.add_parser("themes")
+    subparsers.add_parser("themes").add_argument("--all", action="store_true")
     status_parser = subparsers.add_parser("status")
     status_parser.add_argument("--devices", action="store_true")
 
@@ -653,7 +773,7 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv)
     try:
         if args.command == "themes":
-            print(json.dumps(theme_rows(), indent=2))
+            print(json.dumps(theme_rows(all_themes=args.all), indent=2))
         elif args.command == "status":
             print(json.dumps(status(with_devices=args.devices), indent=2))
         elif args.command == "params":

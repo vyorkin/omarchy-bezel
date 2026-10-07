@@ -29,6 +29,10 @@ Panel {
 
   property var themes: []
   property string current: ""
+  property string unit: ""
+  property bool ownUnit: false
+  property int hidden: 0
+  property var screen: null
   property string themesDir: ""
   property string unitState: "absent"
   property int brightness: 67
@@ -195,6 +199,10 @@ Panel {
       root.themes = state.themes || []
       root.themesDir = state.themesDir || ""
       root.current = state.theme || ""
+      root.unit = state.unit || ""
+      root.ownUnit = state.ownUnit === true
+      root.hidden = Number(state.hidden) || 0
+      root.screen = state.screen || null
       root.unitState = state.state || "absent"
       root.brightness = Number(state.brightness)
       // Previews already on disk show without waiting for the render pass.
@@ -252,6 +260,30 @@ Panel {
     var next = root.thumbMtime
     next[name] = mtime
     root.thumbMtime = next
+  }
+
+  // The line under every section: what is driving the panel right now, and how
+  // much of the theme folder this screen cannot use.
+  function footerHint() {
+    if (root.mode === "detail")
+      return "Changes are written to the theme's theme.json and the screen follows."
+    var parts = []
+    if (root.unit !== "") parts.push("Driven by " + root.unit + ".")
+    if (root.currentThemeBackground() === "video" && !root.ownUnit)
+      parts.push("Video theme: only its poster is drawn.")
+    if (root.hidden > 0)
+      parts.push(root.hidden + (root.hidden === 1
+        ? " theme for another screen is hidden."
+        : " themes for other screens are hidden."))
+    if (parts.length === 0)
+      return "Enter picks a theme, arrows walk the lists, middle click takes the panel off."
+    return parts.join(" ")
+  }
+
+  function currentThemeBackground() {
+    for (var i = 0; i < root.themes.length; i++)
+      if (root.themes[i].current) return root.themes[i].background
+    return ""
   }
 
   function thumbSource(name) {
@@ -485,7 +517,7 @@ Panel {
     contentWidth: panel.fittedContentWidth(Style.space(380))
     // The body's sections all have fixed heights, so this number is the same on
     // the first frame as after the themes and the parameters have been read.
-    contentHeight: panel.fittedContentHeight(Style.space(740), Style.space(800))
+    contentHeight: panel.fittedContentHeight(Style.space(762), Style.space(820))
 
     PanelKeyCatcher {
       id: keys
@@ -607,10 +639,23 @@ Panel {
                                  : "transparent")
 
               Text {
+                id: sizeLabel
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.right: parent.right
+                anchors.rightMargin: Style.space(6)
+                text: (modelData.canvas || "")
+                  + (modelData.background === "video" ? " · video" : "")
+                color: root.dimText
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+                textFormat: Text.PlainText
+              }
+
+              Text {
                 anchors.verticalCenter: parent.verticalCenter
                 anchors.left: parent.left
                 anchors.leftMargin: Style.space(6)
-                anchors.right: parent.right
+                anchors.right: sizeLabel.left
                 anchors.rightMargin: Style.space(6)
                 elide: Text.ElideRight
                 text: modelData.name
@@ -1096,9 +1141,7 @@ Panel {
         Text {
           width: parent.width
           height: Style.space(26)
-          text: root.mode === "detail"
-            ? "Changes are written to the theme's theme.json and the screen follows."
-            : "Enter picks a theme, arrows walk the lists, middle click takes the panel off."
+          text: root.footerHint()
           color: root.dimText
           wrapMode: Text.WordWrap
           font.family: Style.font.family
