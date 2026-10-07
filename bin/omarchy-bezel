@@ -220,6 +220,8 @@ def element_entries(theme: dict) -> list[dict]:
                 "visible": element.get("visible", True),
                 "opacity": element.get("opacity", 1.0),
                 "size": style.get("size"),
+                "align": style.get("align"),
+                "valign": style.get("valign"),
                 "colors": [
                     color
                     for color in colors_in({"kind": kind})
@@ -227,7 +229,9 @@ def element_entries(theme: dict) -> list[dict]:
                 ],
                 "paths": {"visible": f"elements.{index}.visible",
                           "opacity": f"elements.{index}.opacity",
-                          "size": f"elements.{index}.kind.style.size"},
+                          "size": f"elements.{index}.kind.style.size",
+                          "align": f"elements.{index}.kind.style.align",
+                          "valign": f"elements.{index}.kind.style.valign"},
             }
         )
     return entries

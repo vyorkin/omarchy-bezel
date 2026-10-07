@@ -423,6 +423,26 @@ Panel {
     root.edit("elements." + element.index + ".kind.style.size=" + element.size)
   }
 
+  // Text inside its box: the imported themes leave everything left-aligned,
+  // while the app the theme came from centred it, so this is worth a control.
+  function cycleAlign(element) {
+    if (!element) return
+    var order = ["left", "center", "right"]
+    var next = order[(order.indexOf(element.align) + 1) % order.length]
+    element.align = next
+    root.elements = root.elements.slice()
+    root.edit("elements." + element.index + ".kind.style.align=" + next)
+  }
+
+  function cycleValign(element) {
+    if (!element) return
+    var order = ["top", "middle", "bottom"]
+    var next = order[(order.indexOf(element.valign) + 1) % order.length]
+    element.valign = next
+    root.elements = root.elements.slice()
+    root.edit("elements." + element.index + ".kind.style.valign=" + next)
+  }
+
   function paint(path, value) {
     if (!path) return
     root.edit(path + "=" + value)
@@ -1038,6 +1058,25 @@ Panel {
             onMoving: function(value) { root.setElementSize(root.openElement, value) }
           }
 
+          // Where the text sits inside its box. A theme imported from another
+          // app usually wants Center here: those apps anchor text in the middle
+          // of the box, and left-aligned text then walks out of its frame.
+          OptionRow {
+            visible: root.openElement !== null && root.openElement.type === "text"
+            label: "Align"
+            valueText: root.openElement && root.openElement.align ? root.openElement.align : "left"
+            active: root.openElement !== null && root.detailCursor === 3
+            onPicked: root.cycleAlign(root.openElement)
+          }
+
+          OptionRow {
+            visible: root.openElement !== null && root.openElement.type === "text"
+            label: "Vertical"
+            valueText: root.openElement && root.openElement.valign ? root.openElement.valign : "middle"
+            active: root.openElement !== null && root.detailCursor === 4
+            onPicked: root.cycleValign(root.openElement)
+          }
+
           PanelSectionHeader {
             visible: root.openElement !== null && root.openElement.colors.length > 0
             text: "Colours"
@@ -1055,7 +1094,7 @@ Panel {
               width: detail.width
               height: Style.space(22)
               radius: Math.round(Style.cornerRadius * 0.5)
-              color: root.openElement && root.detailCursor === 3 + index
+              color: root.openElement && root.detailCursor === root.colourRowStart() + index
                 ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.18)
                 : (colourHover.hovered ? Qt.rgba(root.textColor.r, root.textColor.g, root.textColor.b, 0.08)
                                        : "transparent")
@@ -1101,7 +1140,7 @@ Panel {
                 hoverEnabled: true
                 acceptedButtons: Qt.LeftButton
                 onClicked: {
-                  root.detailCursor = 3 + index
+                  root.detailCursor = root.colourRowStart() + index
                   root.colorPath = fullPath
                   var preset = root.paletteIndexFor(modelData.value)
                   if (preset >= 0) root.paletteCursor = preset
@@ -1200,17 +1239,26 @@ Panel {
     if (dx > 0 && root.openElement && root.openElement.colors.length > 0) {
       var last = rows - 1
       if (root.detailCursor === last)
-        root.detailCursor = 3 + Math.min(root.openElement.colors.length - 1,
-          Math.max(0, root.detailCursor - 3))
+        root.detailCursor = root.colourRowStart()
+          + Math.min(root.openElement.colors.length - 1,
+                     Math.max(0, root.detailCursor - root.colourRowStart()))
     }
   }
 
   function detailRows() {
-    if (!root.openElement) return 4
-    // visible, opacity, size (text only), one row per colour, the palette row.
-    var rows = 3 + (root.openElement.type === "text" ? 1 : 0) + root.openElement.colors.length
+    if (!root.openElement) return 5
+    // visible, opacity, size (text only), align, valign (text only), one row per
+    // colour, then the palette row.
+    var rows = 3 + (root.openElement.type === "text" ? 3 : 0)
+      + root.openElement.colors.length
     if (root.openElement.colors.length > 0) rows += 1
     return rows
+  }
+
+  // Where the colour rows start, which depends on whether the element carries
+  // the rows only text has.
+  function colourRowStart() {
+    return root.openElement && root.openElement.type === "text" ? 6 : 3
   }
 
   function openDetail(index) {
@@ -1236,17 +1284,22 @@ Panel {
       return
     }
     if (!root.openElement) return
-    var sizeRow = root.openElement.type === "text" ? 2 : -1
+    var isText = root.openElement.type === "text"
+    var colourStart = root.colourRowStart()
     if (root.detailCursor === 0) {
       root.setElementVisible(root.openElement, !root.openElement.visible)
     } else if (root.detailCursor === 1) {
       root.setElementOpacity(root.openElement, root.openElement.opacity > 0.5 ? 0 : 1)
-    } else if (root.detailCursor === sizeRow) {
+    } else if (isText && root.detailCursor === 2) {
       var preset = root.openElement.size > 40 ? 14 : root.openElement.size * 2
       root.setElementSize(root.openElement, preset)
-    } else if (root.detailCursor >= 3
-               && root.detailCursor < 3 + root.openElement.colors.length) {
-      var colour = root.openElement.colors[root.detailCursor - 3]
+    } else if (isText && root.detailCursor === 3) {
+      root.cycleAlign(root.openElement)
+    } else if (isText && root.detailCursor === 4) {
+      root.cycleValign(root.openElement)
+    } else if (root.detailCursor >= colourStart
+               && root.detailCursor < colourStart + root.openElement.colors.length) {
+      var colour = root.openElement.colors[root.detailCursor - colourStart]
       root.colorPath = "elements." + root.openElement.index + "." + colour.path
     } else if (root.palette.length > 0 && root.colorPath) {
       root.paint(root.colorPath, root.palette[root.paletteCursor].value)
@@ -1303,6 +1356,43 @@ Panel {
       value: slider_holder.value
       onMoved: function(value) { slider_holder.moving(value) }
       onReleased: function(value) { slider_holder.picked(value) }
+    }
+  }
+
+  // A row whose value the click steps through, for the choices an element has
+  // rather than a number to drag.
+  component OptionRow: RowLayout {
+    id: option
+    property string label: ""
+    property string valueText: ""
+    property bool active: false
+    signal picked()
+
+    width: parent ? parent.width : 0
+    spacing: Style.spacing.controlGap
+
+    Text {
+      Layout.fillWidth: true
+      text: option.label
+      color: option.active ? root.accent : root.textColor
+      font.family: Style.font.family
+      font.pixelSize: Style.font.bodySmall
+      textFormat: Text.PlainText
+    }
+
+    Text {
+      text: option.valueText
+      color: root.dimText
+      font.family: Style.font.family
+      font.pixelSize: Style.font.bodySmall
+      textFormat: Text.PlainText
+    }
+
+    MouseArea {
+      anchors.fill: parent
+      hoverEnabled: true
+      acceptedButtons: Qt.LeftButton
+      onClicked: option.picked()
     }
   }
 

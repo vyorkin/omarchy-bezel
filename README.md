@@ -68,6 +68,7 @@ which are read-only here.
 | Middle click | take the panel off the screen, or put it back |
 | Click a theme | that theme is enabled and started on the panel |
 | Drag a slider | applies while dragging, one restart of the theme when the value settles |
+| Align / Vertical rows | step a text element's alignment: left → centre → right, top → middle → bottom |
 | Arrow keys | move the cursor: right enters the elements, left comes back |
 | Enter | pick a theme, open an element, toggle a switch, paint a colour |
 | Escape | one step back, then close |
@@ -174,6 +175,16 @@ widget can edit. Imported themes keep their own licence (the first-party
 turing-smart-screen-python themes are GPL-3.0-or-later, the vendor artwork
 belongs to the vendor); they stay in `~/.local/share/bezel/themes` and are not
 part of this repository.
+
+One thing to know about imported themes: that app anchors every value in the
+**middle of its box** (`ANCHOR: mm`), and Bezel's importer writes it out
+left-aligned — a freshly imported theme therefore presses its numbers against
+the right edge of their boxes. Fix it per element with the **Align** row (step
+it to `center`), or in one line per element:
+
+```bash
+bin/omarchy-bezel set tsx-gradient-8.8 elements.1.kind.style.align=center
+```
 
 ## Layout of this repository
 
