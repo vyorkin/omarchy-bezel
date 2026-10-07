@@ -135,6 +135,32 @@ Only one program may drive the screen at a time. If Bezel Studio has **Live** on
 turn it off before picking a theme here; otherwise the second process is refused.
 The RGB Control widget, which also talks to the panel, only sets its backlight.
 
+## Where more themes come from
+
+`bezel import` turns another app's theme into a Bezel theme, so most of the
+world of Turing/TURZX screens is reachable. The two places worth knowing:
+
+- [turing-smart-screen-python](https://github.com/mathoudebine/turing-smart-screen-python)
+  ships themes under `res/themes/`; the ones whose `theme.yaml` says
+  `DISPLAY_SIZE: 8.8"` are 1920×480 or 480×1920 and fit this panel;
+- `.turtheme` files (the vendor TURZX app's format) import too —
+  [TurzxThemeToolkit](https://github.com/breacasu/TurzxThemeToolkit) and
+  [davidfdr/turzx-themes](https://github.com/davidfdr/turzx-themes) are sources;
+  a `.turtheme` has no fonts and no video inside it, so those are warnings to
+  read, not failures.
+
+```bash
+cd ~/.local/share/bezel/themes
+git clone --depth 1 https://github.com/mathoudebine/turing-smart-screen-python /tmp/tsx
+bezel import "/tmp/tsx/res/themes/Gradient" --output ./tsx-gradient-8.8
+rm -rf /tmp/tsx
+```
+
+Import into a folder, not into a `.bezeltheme` file: a folder is what this
+widget can edit. Themes imported this way keep their own licence (the
+first-party turing-smart-screen-python themes are GPL-3.0-or-later); they stay
+in `~/.local/share/bezel/themes` and are not part of this repository.
+
 ## Layout of this repository
 
 ```
