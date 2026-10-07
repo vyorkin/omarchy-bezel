@@ -80,6 +80,16 @@ Panel {
   Component.onCompleted: root.refresh()
   onOpenedChanged: if (root.opened) root.refresh()
 
+  // The panel can be taken over by the studio or a terminal at any moment, so
+  // the glyph is corrected on a slow timer as well as on every open. Reads are
+  // cheap (one helper call), and half a minute of lag costs nothing.
+  Timer {
+    interval: 30000
+    running: true
+    repeat: true
+    onTriggered: root.refresh()
+  }
+
   // ------------------------------------------------------------------ backend
 
   // Status is read on demand, never polled: the theme only changes when this

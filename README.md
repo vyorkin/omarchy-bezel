@@ -54,7 +54,7 @@ time and a theme shows its new look seconds after it is edited.
 ## Install
 
 ```bash
-omarchy plugin install https://github.com/vyorkin/omarchy-bezel
+omarchy plugin add https://github.com/vyorkin/omarchy-bezel --enable
 ```
 
 Or by hand:
