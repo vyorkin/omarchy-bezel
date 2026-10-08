@@ -31,6 +31,7 @@ so this theme is opaque by construction.
 
 import json
 import pathlib
+import shutil
 import sys
 
 from PIL import Image, ImageDraw, ImageFont
@@ -46,18 +47,21 @@ MONO = {"family": "JetBrains Mono", "weight": 500, "italic": False}
 
 # The panel's sizes: the main reading is huge, the small print is still readable
 # across a desk, and the labels sit between the two.
-BIG = 132
-SMALL = 40
-NET = 42
-CLOCK = 76
-DATE = 26
-LABEL_SIZE = 30
+BIG = 150          # CPU and GPU, the two the panel is read for
+MID = 104          # RAM and DISK, side by side
+VRAM = 56
+SMALL = 44
+TOTAL = 26
+NET = 46
+CLOCK = 88
+DATE = 30
+LABEL_SIZE = 32
 
 # A block's parts, in pixels. `LABEL_GAP` is the air between the label and the
 # ink of the value under it; `BLOCK_GAP` is the air between two blocks.
 LABEL_BOX = 40
-LABEL_GAP = 26
-BLOCK_GAP = 36
+LABEL_GAP = 34
+BLOCK_GAP = 80
 BAR_GAP = 20            # value -> bar
 LINE_GAP = 16           # bar -> the line under it
 
@@ -128,37 +132,37 @@ def ink(size):
 BLOCKS = [
     ("CPU", [
         [(MARGIN, 300, "CPU usage", BIG, sensor("cpu.usage", size=BIG))],
-        [(MARGIN, WIDTH, "CPU bar", 24, bar("cpu.usage"))],
+        [(MARGIN, WIDTH, "CPU bar", 26, bar("cpu.usage"))],
         [(MARGIN, 230, "CPU frequency", SMALL, sensor("cpu.frequency", size=SMALL)),
          (280, 200, "CPU temperature", SMALL, sensor("cpu.temperature", size=SMALL))],
     ]),
     ("GPU", [
         [(MARGIN, 300, "GPU usage", BIG, sensor("gpu.usage", size=BIG))],
-        [(MARGIN, WIDTH, "GPU bar", 24, bar("gpu.usage"))],
+        [(MARGIN, WIDTH, "GPU bar", 26, bar("gpu.usage"))],
         [(MARGIN, 230, "GPU frequency", SMALL, sensor("gpu.frequency", size=SMALL)),
          (280, 200, "GPU temperature", SMALL, sensor("gpu.temperature", size=SMALL))],
+        # VRAM belongs to the graphics card, so it lives in that block, and it
+        # says its own name: as small print under a wall of percentages nobody
+        # could tell what the number was.
+        [(MARGIN, WIDTH, "GPU memory used", VRAM,
+          sensor("gpu.memory.used", size=VRAM, prefix="VRAM ", decimals=True))],
+        [(MARGIN, WIDTH, "GPU memory percent", SMALL,
+          sensor("gpu.memory.percent", size=SMALL, paint=DIM, suffix=" used"))],
     ]),
-    ("VRAM", [
-        [(MARGIN, 190, "GPU memory used", SMALL,
-          sensor("gpu.memory.used", size=SMALL, decimals=True)),
-         (250, 230, "GPU memory percent", SMALL,
-          sensor("gpu.memory.percent", size=SMALL, paint=DIM))],
-    ]),
-    ("RAM", [
-        [(MARGIN, 300, "RAM percent", BIG, sensor("memory.percent", size=BIG))],
-        [(MARGIN, WIDTH, "RAM bar", 24, bar("memory.percent"))],
-        [(MARGIN, 230, "RAM used", SMALL,
+    # RAM and DISK share a block, side by side: neither needs the full width.
+    ("RAM / DISK", [
+        [(MARGIN, 200, "RAM percent", MID, sensor("memory.percent", size=MID)),
+         (252, 220, "Disk percent", MID, sensor("disk.root.percent", size=MID))],
+        [(MARGIN, 200, "RAM bar", 22, bar("memory.percent")),
+         (252, 220, "Disk bar", 22, bar("disk.root.percent"))],
+        [(MARGIN, 200, "RAM used", SMALL,
           sensor("memory.used", size=SMALL, paint=DIM, decimals=True)),
-         (280, 200, "RAM total", SMALL,
-          sensor("memory.total", size=SMALL, paint=DIM, decimals=True))],
-    ]),
-    ("DISK", [
-        [(MARGIN, 300, "Disk percent", BIG, sensor("disk.root.percent", size=BIG))],
-        [(MARGIN, WIDTH, "Disk bar", 24, bar("disk.root.percent"))],
-        [(MARGIN, 230, "Disk used", SMALL,
-          sensor("disk.root.used", size=SMALL, paint=DIM, decimals=True)),
-         (280, 200, "Disk free", SMALL,
-          sensor("disk.root.free", size=SMALL, paint=DIM, decimals=True))],
+         (252, 220, "Disk used", SMALL,
+          sensor("disk.root.used", size=SMALL, paint=DIM, decimals=True))],
+        [(MARGIN, 200, "RAM total", TOTAL,
+          sensor("memory.total", size=TOTAL, paint=DIM, decimals=True)),
+         (252, 220, "Disk free", TOTAL,
+          sensor("disk.root.free", size=TOTAL, paint=DIM, decimals=True))],
     ]),
     ("NET", [
         [(MARGIN, WIDTH, "Network down", NET,
@@ -168,9 +172,9 @@ BLOCKS = [
     ]),
     ("", [                    # the clock, with the vendor's icon beside it
         [(MARGIN, 300, "Time", CLOCK, clock("%H:%M", size=CLOCK))],
-        [(MARGIN, 260, "Date", DATE, clock("%a %e %b", size=DATE, paint=DIM)),
-         (300, 180, "Uptime", DATE,
-          sensor("system.uptime", size=DATE, paint=DIM, prefix="up "))],
+        [(MARGIN, 240, "Date", DATE, clock("%a %e %b", size=DATE, paint=DIM)),
+         (290, 190, "Uptime", TOTAL,
+          sensor("system.uptime", size=TOTAL, paint=DIM, prefix="up "))],
     ]),
 ]
 
@@ -235,6 +239,9 @@ def main(template: str, fonts: str, output: str) -> int:
     assets = folder / "assets"
     assets.mkdir(parents=True, exist_ok=True)
     background(template_path, fonts_path, labels, elements).save(assets / "background.png")
+    # A copy of the source art travels with the theme: rebuilding it later does
+    # not need the vendor repository again.
+    shutil.copyfile(template_path, folder / "vendor-template.png")
 
     theme = {
         "schema": 1,
