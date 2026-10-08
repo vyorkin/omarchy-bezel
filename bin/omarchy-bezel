@@ -619,6 +619,10 @@ def use_theme(name: str) -> dict:
     wait_until_inactive(stopping)
     if streamed:
         clear_screen_playback()
+    # The screen may have been switched off from the widget: put its backlight
+    # back before the theme draws, or the frames land on a dark panel.
+    if read_state().get("off"):
+        screen_command("brightness", str(read_state().get("brightness", 67)))
     if unit_state_of(target) == "masked":
         systemctl("unmask", target)
     reset_failed(target)
@@ -637,11 +641,13 @@ def use_theme(name: str) -> dict:
 
 
 def stop_theme() -> dict:
-    """Take the panel off the screen and darken it.
+    """Take the panel off the screen and put its backlight out.
 
     Stopping the launcher alone hands the screen back to its own mode — its
-    clock, or a stored video — which is not "off". `bezel off` turns the panel
-    itself off; the next theme wakes it again.
+    clock, or a stored video — which is not "off", and `bezel off` turns the
+    panel off for good: the frames a later theme draws do not wake it again (it
+    needs the screen's wake chip). The backlight at zero is a dark screen that
+    any later theme can restore, so that is what "off" means here.
     """
     stopped = []
     stopping: list[str] = []
@@ -659,12 +665,12 @@ def stop_theme() -> dict:
     wait_until_inactive(stopping)
     if streamed:
         clear_screen_playback()
-    result = screen_command("off")
-    off = result is not None and result.returncode == 0
-    write_state({"off": off})
-    if not off:
+    result = screen_command("brightness", "0")
+    dark = result is not None and result.returncode == 0
+    write_state({"off": dark})
+    if not dark:
         detail = "" if result is None else (result.stderr or result.stdout or "").strip()
-        raise CliError("the theme stopped, but the screen refused to go off"
+        raise CliError("the theme stopped, but the screen refused to go dark"
                        + (f": {detail}" if detail else ""))
     return {"stopped": stopped, "off": True}
 
@@ -882,7 +888,11 @@ def brightness(percent: int | None) -> dict:
     )
     if result.returncode != 0:
         raise CliError((result.stderr or "bezel brightness failed").strip())
-    write_state({"brightness": percent})
+    # A backlight of zero is the widget's idea of "off"; any level switches it on.
+    if percent == 0:
+        write_state({"off": True})
+    else:
+        write_state({"brightness": percent, "off": False})
     return {"brightness": percent}
 
 

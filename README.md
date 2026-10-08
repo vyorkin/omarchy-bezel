@@ -40,6 +40,17 @@ covers it. A picture or a video there is reported as such, with no palette. A
 gradient is painted at its first stop — the row says how many stops there are,
 and the rest are in that element's own colours, under Elements.
 
+### Turning the panel off
+
+Off means *dark*, and it is reached through the backlight: the launchers are
+stopped and `bezel brightness 0` is sent, so nothing glows and the next theme
+restores the remembered level before it draws.
+
+Not `bezel off`, which is the obvious command and the wrong one: it turns the
+panel off for good. A later theme's frames do not wake it again — the screen
+stays black while `bezel run` happily reports frames — and only the screen's own
+wake chip brings it back.
+
 ### Switching to and from a theme that streams
 
 A theme with a launcher of its own usually feeds the panel's **own decoder**. The
@@ -83,7 +94,7 @@ which are read-only here.
 | Left click on the bar glyph | open the popup |
 | Middle click | take the panel off the screen, or put it back |
 | Click a theme | that theme is enabled and started on the panel |
-| The switch in the header | starts the chosen theme, or stops it and turns the screen **off** (`bezel off`): the panel goes dark instead of falling back to its own clock, and the next theme wakes it |
+| The switch in the header | starts the chosen theme, or stops it and puts the backlight out: the panel goes dark instead of falling back to its own clock, and the next theme restores the level and wakes it |
 | Drag a slider | applies while dragging, one restart of the theme when the value settles |
 | Align / Vertical rows | step a text element's alignment: left → centre → right, top → middle → bottom |
 | Arrow keys | move the cursor: right enters the elements, left comes back |
