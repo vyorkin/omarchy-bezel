@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 """Build the "Simple B/W 8.8" theme for the Turing 8.8" panel (480x1920).
 
-The artwork started as the vendor's "Simple black and white theme", one of the
-resources re-published in turing-smart-screen-python under
+The look is the vendor's "Simple black and white theme", one of the resources
+re-published in turing-smart-screen-python under
 `res/themes/--Theme examples/8.8inch/Simple black and white theme/`
-(`theme_res_157510.png`). Its layout did not survive the move to this panel: the
-labels are tiny, three long bands of it are empty, and one of its labels
-("Frames FPS") has nothing to show on a machine without a MangoHud log.
+(`theme_res_157510.png`). Its own layout is unusable here — 22 px labels, three
+empty bands, and a "Frames FPS" label with nothing to show on a machine without
+a MangoHud log — so only the look (black, white, monospace) and its clock icon
+are kept.
 
-What this build keeps is the look — black, white, one monospace face — and the
-three little icons the vendor drew (the CPU chip, the graphics card and the
-clock). Everything else is laid out here, big enough to read across a desk: a
-value per block at 150 px, the small print at 42-56, labels at 34, a bar under
-every percentage, and blocks running the whole height with no dead bands.
+Everything else is laid out by this script as a list of blocks that it stacks
+down the canvas with the same gaps everywhere: a label, then the value, then a
+bar or a line under it. No y is typed in by hand, so the spacing cannot drift
+per block — which is how the earlier hand-placed version ended up with labels
+touching their numbers.
 
 Usage:
 
@@ -24,8 +25,8 @@ Usage:
 
 The vendor picture is 481x1921 with transparent pixels, and the panel honours a
 frame's alpha: a transparent background would show the *previous* theme through
-it. Icons are cut out of the template and pasted onto an opaque black canvas, so
-the theme is opaque by construction.
+it. The icon is cut out of the template and pasted onto an opaque black canvas,
+so this theme is opaque by construction.
 """
 
 import json
@@ -35,28 +36,33 @@ import sys
 from PIL import Image, ImageDraw, ImageFont
 
 CANVAS = (480, 1920)
-MARGIN = 39
-WIDTH = CANVAS[0] - MARGIN - MARGIN          # 402: bars and big values
+MARGIN = 36
+WIDTH = CANVAS[0] - MARGIN
 BLACK = (0, 0, 0)
 WHITE = "#f3f5faff"
 DIM = "#9aa0a6ff"
-LABEL = "#8b94a9ff"
+LABEL_COLOUR = (139, 148, 169)
 MONO = {"family": "JetBrains Mono", "weight": 500, "italic": False}
 
-# Pieces cut out of the vendor template: name, source box, where it goes, height.
-ICONS = [
-    ("clock", (389, 1531, 428, 1570), (348, 1648), 64),
-]
+# The panel's sizes: the main reading is huge, the small print is still readable
+# across a desk, and the labels sit between the two.
+BIG = 132
+SMALL = 40
+NET = 42
+CLOCK = 76
+DATE = 26
+LABEL_SIZE = 30
 
-# Labels printed into the background: text, x, y, size.
-LABELS = [
-    ("CPU", MARGIN, 30, 34),
-    ("GPU", MARGIN, 380, 34),
-    ("VRAM", MARGIN, 700, 34),
-    ("RAM", MARGIN, 806, 34),
-    ("DISK", MARGIN, 1126, 34),
-    ("NET", MARGIN, 1412, 34),
-]
+# A block's parts, in pixels. `LABEL_GAP` is the air between the label and the
+# ink of the value under it; `BLOCK_GAP` is the air between two blocks.
+LABEL_BOX = 40
+LABEL_GAP = 26
+BLOCK_GAP = 36
+BAR_GAP = 20            # value -> bar
+LINE_GAP = 16           # bar -> the line under it
+
+ICON_BOX = (389, 1531, 428, 1570)     # the clock icon in the vendor template
+ICON_HEIGHT = 64
 
 BACKGROUND = {"type": "image", "asset": "assets/background.png", "fit": "fill"}
 
@@ -66,9 +72,9 @@ The look is the vendor's "Simple black and white theme" for the 8.8"
 Turing/TURZX screen, as re-published with the extracted vendor resources in
 [mathoudebine/turing-smart-screen-python](https://github.com/mathoudebine/turing-smart-screen-python)
 under `res/themes/--Theme examples/8.8inch/Simple black and white theme/`
-(`theme_res_157510.png`). Its black background and its three icons (CPU chip,
-graphics card, clock) are used here; the layout, the labels and the values are
-this theme's own, drawn by `tools/build-bw-theme.py` in the
+(`theme_res_157510.png`). Its black background and its clock icon are used here;
+the layout, the labels and the values are this theme's own, drawn by
+`tools/build-bw-theme.py` in the
 [omarchy-bezel](https://github.com/vyorkin/omarchy-bezel) widget repository.
 """
 
@@ -97,7 +103,7 @@ def clock(pattern, *, size, paint=WHITE):
     }
 
 
-def bar(key, *, height=26):
+def bar(key, *, height=24):
     return {
         "type": "bar",
         "binding": {"key": key, "min": 0.0, "max": 100.0},
@@ -108,63 +114,113 @@ def bar(key, *, height=26):
     }
 
 
-# name, x, y, width, height, element kind
-ROWS = [
-    # CPU
-    ("CPU usage", MARGIN, 72, WIDTH, 180, sensor("cpu.usage", size=150)),
-    ("CPU bar", MARGIN, 250, WIDTH, 26, bar("cpu.usage")),
-    ("CPU frequency", MARGIN, 288, 230, 56, sensor("cpu.frequency", size=46)),
-    ("CPU temperature", 280, 288, 200, 56, sensor("cpu.temperature", size=46)),
-    # GPU
-    ("GPU usage", MARGIN, 422, WIDTH, 180, sensor("gpu.usage", size=150)),
-    ("GPU bar", MARGIN, 600, WIDTH, 26, bar("gpu.usage")),
-    ("GPU frequency", MARGIN, 638, 230, 56, sensor("gpu.frequency", size=46)),
-    ("GPU temperature", 280, 638, 200, 56, sensor("gpu.temperature", size=46)),
-    # VRAM
-    ("GPU memory used", MARGIN, 738, 190, 58,
-     sensor("gpu.memory.used", size=42, decimals=True)),
-    ("GPU memory percent", 250, 738, 230, 58,
-     sensor("gpu.memory.percent", size=42, paint=DIM)),
-    # RAM
-    ("RAM percent", MARGIN, 812, WIDTH, 180, sensor("memory.percent", size=150)),
-    ("RAM bar", MARGIN, 990, WIDTH, 26, bar("memory.percent")),
-    ("RAM used", MARGIN, 1028, 190, 56,
-     sensor("memory.used", size=40, paint=DIM, decimals=True)),
-    ("RAM total", 250, 1028, 230, 56,
-     sensor("memory.total", size=40, paint=DIM, decimals=True)),
-    # Disk
-    ("Disk percent", MARGIN, 1132, WIDTH, 180, sensor("disk.root.percent", size=150)),
-    ("Disk bar", MARGIN, 1310, WIDTH, 26, bar("disk.root.percent")),
-    ("Disk used", MARGIN, 1348, 190, 56,
-     sensor("disk.root.used", size=40, paint=DIM, decimals=True)),
-    ("Disk free", 250, 1348, 230, 56,
-     sensor("disk.root.free", size=40, paint=DIM, decimals=True)),
-    # Network
-    ("Network down", MARGIN, 1452, WIDTH, 62, sensor("net.down", size=54, prefix="\u2193 ")),
-    ("Network up", MARGIN, 1522, WIDTH, 62, sensor("net.up", size=54, prefix="\u2191 ")),
-    # Clock, date, uptime: the vendor's clock icon sits beside the time.
-    ("Time", MARGIN, 1626, 300, 120, clock("%H:%M", size=96)),
-    ("Date", MARGIN, 1766, 300, 48, clock("%a %e %b", size=38, paint=DIM)),
-    ("Uptime", MARGIN, 1814, 300, 44,
-     sensor("system.uptime", size=32, paint=DIM, prefix="up ")),
+def ink(size):
+    """How tall a value of this size stands, with a little air around it.
+
+    Smaller than the font's own box (a monospace face reserves room for
+    descenders), so a value can never reach into the row above it.
+    """
+    return round(size * 0.85) + 12
+
+
+# Each block: its label, and its rows. A row is a list of columns, and a column
+# is (x, width, name, size, kind). The script works out every y from this.
+BLOCKS = [
+    ("CPU", [
+        [(MARGIN, 300, "CPU usage", BIG, sensor("cpu.usage", size=BIG))],
+        [(MARGIN, WIDTH, "CPU bar", 24, bar("cpu.usage"))],
+        [(MARGIN, 230, "CPU frequency", SMALL, sensor("cpu.frequency", size=SMALL)),
+         (280, 200, "CPU temperature", SMALL, sensor("cpu.temperature", size=SMALL))],
+    ]),
+    ("GPU", [
+        [(MARGIN, 300, "GPU usage", BIG, sensor("gpu.usage", size=BIG))],
+        [(MARGIN, WIDTH, "GPU bar", 24, bar("gpu.usage"))],
+        [(MARGIN, 230, "GPU frequency", SMALL, sensor("gpu.frequency", size=SMALL)),
+         (280, 200, "GPU temperature", SMALL, sensor("gpu.temperature", size=SMALL))],
+    ]),
+    ("VRAM", [
+        [(MARGIN, 190, "GPU memory used", SMALL,
+          sensor("gpu.memory.used", size=SMALL, decimals=True)),
+         (250, 230, "GPU memory percent", SMALL,
+          sensor("gpu.memory.percent", size=SMALL, paint=DIM))],
+    ]),
+    ("RAM", [
+        [(MARGIN, 300, "RAM percent", BIG, sensor("memory.percent", size=BIG))],
+        [(MARGIN, WIDTH, "RAM bar", 24, bar("memory.percent"))],
+        [(MARGIN, 230, "RAM used", SMALL,
+          sensor("memory.used", size=SMALL, paint=DIM, decimals=True)),
+         (280, 200, "RAM total", SMALL,
+          sensor("memory.total", size=SMALL, paint=DIM, decimals=True))],
+    ]),
+    ("DISK", [
+        [(MARGIN, 300, "Disk percent", BIG, sensor("disk.root.percent", size=BIG))],
+        [(MARGIN, WIDTH, "Disk bar", 24, bar("disk.root.percent"))],
+        [(MARGIN, 230, "Disk used", SMALL,
+          sensor("disk.root.used", size=SMALL, paint=DIM, decimals=True)),
+         (280, 200, "Disk free", SMALL,
+          sensor("disk.root.free", size=SMALL, paint=DIM, decimals=True))],
+    ]),
+    ("NET", [
+        [(MARGIN, WIDTH, "Network down", NET,
+          sensor("net.down", size=NET, prefix="\u2193 "))],
+        [(MARGIN, WIDTH, "Network up", NET,
+          sensor("net.up", size=NET, prefix="\u2191 "))],
+    ]),
+    ("", [                    # the clock, with the vendor's icon beside it
+        [(MARGIN, 300, "Time", CLOCK, clock("%H:%M", size=CLOCK))],
+        [(MARGIN, 260, "Date", DATE, clock("%a %e %b", size=DATE, paint=DIM)),
+         (300, 180, "Uptime", DATE,
+          sensor("system.uptime", size=DATE, paint=DIM, prefix="up "))],
+    ]),
 ]
 
 
-def background(template: pathlib.Path, fonts: pathlib.Path) -> Image.Image:
-    """Opaque black canvas, the vendor's icons, this theme's labels."""
+def layout():
+    """Every element with its frame, and the labels to print into the picture."""
+    elements = []
+    labels = []
+    y = MARGIN
+    for label, rows in BLOCKS:
+        if label:
+            labels.append((label, MARGIN, y))
+            y += LABEL_BOX + LABEL_GAP
+        for index, columns in enumerate(rows):
+            height = max(ink(size) if kind["type"] == "text" else size
+                         for _, _, _, size, kind in columns)
+            for x, width, name, _, kind in columns:
+                elements.append({
+                    "id": len(elements) + 1,
+                    "name": name,
+                    "frame": {"x": float(x), "y": float(y),
+                              "width": float(width), "height": float(height)},
+                    "opacity": 1.0,
+                    "visible": True,
+                    "locked": False,
+                    "kind": kind,
+                })
+            if index == 0 and len(rows) > 1:
+                y += height + BAR_GAP
+            elif len(rows) > 1:
+                y += height + LINE_GAP
+        y += BLOCK_GAP
+    return elements, labels
+
+
+def background(template: pathlib.Path, fonts: pathlib.Path, labels, elements) -> Image.Image:
+    """Opaque black canvas, the vendor's clock icon, this build's labels."""
     source = Image.open(template).convert("RGBA")
     canvas = Image.new("RGB", CANVAS, BLACK)
-    for name, box, position, height in ICONS:
-        icon = source.crop(box)
-        scale = height / icon.height
-        icon = icon.resize((max(1, round(icon.width * scale)), height), Image.LANCZOS)
-        canvas.paste(icon, position, icon)
+    icon = source.crop(ICON_BOX)
+    scale = ICON_HEIGHT / icon.height
+    icon = icon.resize((round(icon.width * scale), ICON_HEIGHT), Image.LANCZOS)
+    clock = next(element for element in elements if element["name"] == "Time")
+    icon_y = int(clock["frame"]["y"] + (clock["frame"]["height"] - ICON_HEIGHT) / 2)
+    canvas.paste(icon, (330, icon_y), icon)
 
     draw = ImageDraw.Draw(canvas)
-    face = ImageFont.truetype(str(fonts / "JetBrainsMono-Medium.otf"), 34)
-    for text, x, y, size in LABELS:
-        face = ImageFont.truetype(str(fonts / "JetBrainsMono-Medium.otf"), size)
-        draw.text((x, y), text, fill=(139, 148, 169), font=face)
+    face = ImageFont.truetype(str(fonts / "JetBrainsMono-Medium.otf"), LABEL_SIZE)
+    for text, x, y in labels:
+        draw.text((x, y), text, fill=LABEL_COLOUR, font=face)
     return canvas
 
 
@@ -174,25 +230,12 @@ def main(template: str, fonts: str, output: str) -> int:
     if not template_path.is_file():
         print(f"no template at {template}", file=sys.stderr)
         return 1
+    elements, labels = layout()
     folder = pathlib.Path(output)
     assets = folder / "assets"
     assets.mkdir(parents=True, exist_ok=True)
-    background(template_path, fonts_path).save(assets / "background.png")
+    background(template_path, fonts_path, labels, elements).save(assets / "background.png")
 
-    elements = []
-    for index, (name, x, y, width, height, kind) in enumerate(ROWS, start=1):
-        elements.append(
-            {
-                "id": index,
-                "name": name,
-                "frame": {"x": float(x), "y": float(y),
-                          "width": float(width), "height": float(height)},
-                "opacity": 1.0,
-                "visible": True,
-                "locked": False,
-                "kind": kind,
-            }
-        )
     theme = {
         "schema": 1,
         "name": "Simple B/W 8.8",
@@ -204,7 +247,11 @@ def main(template: str, fonts: str, output: str) -> int:
     }
     (folder / "theme.json").write_text(json.dumps(theme, indent=2) + "\n")
     (folder / "SOURCE.md").write_text(SOURCE)
-    print(f"{folder}: {len(elements)} elements")
+    last = elements[-1]["frame"]
+    end = int(last["y"] + last["height"])
+    print(f"{folder}: {len(elements)} elements, last row ends at {end} of {CANVAS[1]}")
+    if end > CANVAS[1]:
+        print("  warning: the blocks run past the panel", file=sys.stderr)
     return 0
 
 
