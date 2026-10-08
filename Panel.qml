@@ -30,6 +30,7 @@ Panel {
   property var themes: []
   property string current: ""
   property string unit: ""
+  property bool panelOffState: false
   property bool ownUnit: false
   property int hiddenOther: 0
   property int hiddenRotated: 0
@@ -76,6 +77,9 @@ Panel {
   readonly property color dimText: Qt.darker(textColor, 1.5)
   readonly property color accent: Color.accent
   readonly property bool live: unitState === "active"
+  // The panel switched off with the widget's own switch: the screen is dark,
+  // not merely idle, and the theme is remembered until something wakes it.
+  readonly property bool panelOff: panelOffState
   readonly property var selectedTheme: themes.length > 0
     ? themes[Math.max(0, Math.min(themes.length - 1, themeCursor))] : null
   readonly property var openElement: elements.length > 0 && detailIndex >= 0
@@ -204,6 +208,7 @@ Panel {
       root.themesDir = state.themesDir || ""
       root.current = state.theme || ""
       root.unit = state.unit || ""
+      root.panelOffState = state.off === true
       root.ownUnit = state.ownUnit === true
       root.hiddenOther = state.hidden ? Number(state.hidden.other) || 0 : 0
       root.hiddenRotated = state.hidden ? Number(state.hidden.rotated) || 0 : 0
@@ -274,6 +279,7 @@ Panel {
       return "Changes are written to the theme's theme.json and the screen follows."
     var parts = []
     if (root.unit !== "") parts.push("Driven by " + root.unit + ".")
+    if (root.panelOff) parts.push("Panel off.")
     if (root.currentThemeBackground() === "video" && !root.ownUnit)
       parts.push("Video theme: only its poster is drawn.")
     var hidden = []
@@ -464,7 +470,9 @@ Panel {
     foreground: root.foreground
     tooltipText: root.current === ""
       ? "Case panel"
-      : "Case panel · " + root.current + (root.live ? "" : " (off)")
+      : (root.panelOff
+         ? "Case panel · " + root.current + " (off)"
+         : "Case panel · " + root.current + (root.live ? "" : " (stopped)"))
 
     onPressed: function(buttonCode) {
       if (buttonCode === Qt.MiddleButton) root.togglePanel()

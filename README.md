@@ -40,6 +40,22 @@ covers it. A picture or a video there is reported as such, with no palette. A
 gradient is painted at its first stop — the row says how many stops there are,
 and the rest are in that element's own colours, under Elements.
 
+### Switching to and from a theme that streams
+
+A theme with a launcher of its own usually feeds the panel's **own decoder**. The
+stream stops without a reset, and the screen then keeps the frame it stopped on
+and goes on ignoring the frames a later theme draws — which looks exactly like
+"the panel does not change". Picking another theme therefore stops the launcher,
+waits for the screen's port to be free, sends `bezel storage stop` (the command
+that ends the screen's own playback), and only then starts the new theme.
+
+Two more things the helper handles, both of which used to look like "the theme
+will not start": systemd refuses a unit after a few failed starts
+(`start-limit-hit`, with `enable --now` silently doing nothing), so every start
+is preceded by `systemctl --user reset-failed`; and starting a theme is confirmed
+before the call returns, with one retry for a screen that woke slowly or a port
+another program released a moment ago.
+
 ### Only themes this screen can use
 
 The list shows the themes whose canvas is the panel's size **the way it stands**
@@ -67,6 +83,7 @@ which are read-only here.
 | Left click on the bar glyph | open the popup |
 | Middle click | take the panel off the screen, or put it back |
 | Click a theme | that theme is enabled and started on the panel |
+| The switch in the header | starts the chosen theme, or stops it and turns the screen **off** (`bezel off`): the panel goes dark instead of falling back to its own clock, and the next theme wakes it |
 | Drag a slider | applies while dragging, one restart of the theme when the value settles |
 | Align / Vertical rows | step a text element's alignment: left → centre → right, top → middle → bottom |
 | Arrow keys | move the cursor: right enters the elements, left comes back |

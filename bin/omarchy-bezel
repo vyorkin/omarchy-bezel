@@ -31,6 +31,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -460,8 +461,15 @@ def launcher_states() -> list[tuple[str, str, str]]:
 
 
 def unit_state_of(unit: str) -> str:
-    """active, inactive, masked or absent for a unit this plugin may own."""
-    result = systemctl("show", "-p", "ActiveState", "-p", "UnitFileState", unit)
+    """active, inactive, failed, masked or absent for a unit this plugin owns.
+
+    `failed` is what systemd reaches after a few failed starts: the unit is then
+    refused (`start-limit-hit`) until it is reset, and `enable --now` silently
+    does nothing — which looks exactly like "the theme will not start".
+    """
+    result = systemctl(
+        "show", "-p", "ActiveState", "-p", "UnitFileState", "-p", "Result", unit
+    )
     if result.returncode != 0:
         return "absent"
     fields = dict(
@@ -471,6 +479,8 @@ def unit_state_of(unit: str) -> str:
         return "masked"
     if fields.get("ActiveState") in ("active", "activating"):
         return "active"
+    if fields.get("Result") not in ("success", "", None):
+        return "failed"
     return "inactive"
 
 
@@ -543,33 +553,120 @@ def rotated_canvas(canvas: tuple[int, int] | None, screen: dict | None) -> bool:
     return canvas == (screen["height"], screen["width"])
 
 
+def reset_failed(unit: str) -> None:
+    """Clear a unit's failed state, so systemd may start it again."""
+    systemctl("reset-failed", unit)
+
+
+def wait_until_inactive(units: list[str], timeout: float = 8.0) -> bool:
+    """Wait for every unit to stop: the screen takes one program at a time."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if all(unit_state_of(unit) != "active" for unit in units):
+            return True
+        time.sleep(0.2)
+    return False
+
+
+def wait_until_active(unit: str, timeout: float = 6.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if unit_state_of(unit) == "active":
+            return True
+        time.sleep(0.2)
+    return False
+
+
+def screen_command(*args: str) -> subprocess.CompletedProcess | None:
+    """One `bezel` call at the screen, quietly: nothing else may hold its port."""
+    binary = shutil_which("bezel")
+    if not binary:
+        return None
+    return subprocess.run(
+        [binary, *args], capture_output=True, text=True, timeout=30
+    )
+
+
+def clear_screen_playback() -> None:
+    """Take the screen out of the video mode a streamed theme leaves it in.
+
+    `bezel stream` feeds the panel's own decoder and stops without a reset: the
+    screen keeps the frame it stopped on and goes on ignoring the frames a later
+    theme draws. `storage stop` is the command that ends that playback.
+    """
+    screen_command("storage", "stop")
+
+
 def use_theme(name: str) -> dict:
     """Hand the panel to `name` through its own launcher, stopping the others."""
     if name not in theme_names():
         raise CliError(f"no theme at {name}")
     target = launcher_for(name)
+    stopping: list[str] = []
+    streamed = False
     for other, unit, state in launcher_states():
         if unit == target or state == "absent":
             continue
         if state != "inactive":
             systemctl("disable", "--now", unit)
+            stopping.append(unit)
+            # A theme with a unit of its own is usually streaming to the panel's
+            # decoder; what it leaves behind costs the next theme its picture.
+            if launcher_unit(other) is not None:
+                streamed = True
+        reset_failed(unit)
+    # One program at a time: the port has to be free before the next one opens it.
+    wait_until_inactive(stopping)
+    if streamed:
+        clear_screen_playback()
     if unit_state_of(target) == "masked":
         systemctl("unmask", target)
+    reset_failed(target)
     result = systemctl("enable", "--now", target)
-    if result.returncode != 0:
-        raise CliError(f"cannot start the theme {name}: {(result.stderr or '').strip()}")
-    write_state({"theme": name})
+    if result.returncode != 0 or not wait_until_active(target):
+        # One more try: a screen that woke slowly, or a port another program let
+        # go of a moment ago, leaves the first attempt refused.
+        reset_failed(target)
+        systemctl("enable", "--now", target)
+        if not wait_until_active(target):
+            detail = (result.stderr or result.stdout or "").strip()
+            hint = detail or f"journalctl --user -u {target}"
+            raise CliError(f"cannot start the theme {name}: {hint}")
+    write_state({"theme": name, "off": False})
     return {"theme": name, "unit": target, "state": unit_state_of(target)}
 
 
 def stop_theme() -> dict:
-    """Take the panel off the screen: stop every launcher of every theme."""
+    """Take the panel off the screen and darken it.
+
+    Stopping the launcher alone hands the screen back to its own mode — its
+    clock, or a stored video — which is not "off". `bezel off` turns the panel
+    itself off; the next theme wakes it again.
+    """
     stopped = []
+    stopping: list[str] = []
+    streamed = False
     for name, unit, state in launcher_states():
-        if state in ("active", "inactive"):
+        if state == "absent":
+            continue
+        if state != "inactive":
             systemctl("disable", "--now", unit)
+            stopping.append(unit)
             stopped.append(name)
-    return {"stopped": stopped}
+            if launcher_unit(name) is not None:
+                streamed = True
+        reset_failed(unit)
+    wait_until_inactive(stopping)
+    if streamed:
+        clear_screen_playback()
+    result = screen_command("off")
+    off = result is not None and result.returncode == 0
+    write_state({"off": off})
+    if not off:
+        detail = "" if result is None else (result.stderr or result.stdout or "").strip()
+        raise CliError("the theme stopped, but the screen refused to go off"
+                       + (f": {detail}" if detail else ""))
+    return {"stopped": stopped, "off": True}
 
 
 def restart_if_live(name: str) -> bool:
@@ -760,6 +857,9 @@ def status(*, with_devices: bool = False) -> dict:
         "unit": launcher_for(current) if current else "",
         "ownUnit": launcher_unit(current) is not None if current else False,
         "brightness": state.get("brightness", 67),
+        # `off` is the panel turned off with `bezel off`, which is not the same as
+        # a theme that merely stopped: the launcher is inactive in both cases.
+        "off": bool(state.get("off", False)),
         "themesDir": str(themes_dir()),
         "screen": screen,
         "hidden": hidden_counts(screen),

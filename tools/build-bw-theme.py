@@ -87,18 +87,25 @@ def clock(pattern, *, size, paint=LABEL_COLOUR):
 
 
 # name, x, y, width, height, element kind
+#
+# Every value sits directly under the label it belongs to, in the label's own
+# column: the template reserves that space (the vendor app printed the value
+# there), and one rule keeps the sparse screen looking deliberate. Three places
+# cannot follow it — the date, the second time and the frame rate share the
+# bottom right, and the big time has the clock icon beside it — so there the
+# value goes to the right of its label instead.
 ROWS = [
-    ("CPU usage", 150, 280, 300, 40, sensor("cpu.usage", size=30)),
-    ("GPU usage", 150, 885, 300, 40, sensor("gpu.usage", size=30)),
-    ("Network down", 216, 1326, 240, 26, sensor("net.down", size=20, prefix="\u2193 ")),
-    ("Network up", 216, 1352, 240, 26, sensor("net.up", size=20, prefix="\u2191 ")),
-    ("RAM percent", 115, 1364, 70, 32, sensor("memory.percent", size=26)),
-    ("RAM used", 190, 1370, 180, 26,
+    ("CPU usage", 47, 318, 300, 46, sensor("cpu.usage", size=36)),
+    ("GPU usage", 47, 923, 300, 46, sensor("gpu.usage", size=36)),
+    ("Network down", 216, 1332, 240, 24, sensor("net.down", size=18, prefix="\u2193 ")),
+    ("Network up", 216, 1358, 240, 24, sensor("net.up", size=18, prefix="\u2191 ")),
+    ("RAM percent", 39, 1398, 110, 32, sensor("memory.percent", size=26)),
+    ("RAM used", 39, 1432, 200, 22,
      sensor("memory.used", size=18, paint=DIM_COLOUR, decimals=True)),
-    ("ROM percent", 115, 1506, 70, 32, sensor("disk.root.percent", size=26)),
-    ("ROM used", 190, 1512, 190, 26,
+    ("ROM percent", 39, 1542, 110, 32, sensor("disk.root.percent", size=26)),
+    ("ROM used", 39, 1576, 200, 22,
      sensor("disk.root.used", size=18, paint=DIM_COLOUR, decimals=True)),
-    ("Time", 300, 1526, 100, 48, clock("%H:%M", size=28)),
+    ("Time", 300, 1526, 90, 48, clock("%H:%M", size=26)),
     ("Date", 264, 1598, 200, 34, clock("%a %e %b", size=22)),
     ("Time with seconds", 264, 1646, 200, 30, clock("%H:%M:%S", size=20)),
     ("FPS", 115, 1647, 100, 30, sensor("gpu.fps", size=22)),
