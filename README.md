@@ -214,6 +214,22 @@ it to `center`), or in one line per element:
 bin/omarchy-bezel set tsx-gradient-8.8 elements.1.kind.style.align=center
 ```
 
+### A background with transparency shows the previous theme
+
+The panel draws every frame as an image and honours its alpha, so a theme whose
+background has transparent pixels lets whatever was on the screen show through:
+the new theme looks like it is drawn *over* the last one. Flatten it onto a
+colour, and restart the theme — a running `bezel run` keeps the file it loaded
+at startup:
+
+```bash
+theme=bw-vertical-8.8
+magick ~/.local/share/bezel/themes/$theme/assets/background.png \
+  -background black -alpha remove -alpha off /tmp/bg.png
+mv /tmp/bg.png ~/.local/share/bezel/themes/$theme/assets/background.png
+systemctl --user restart bezel-run@$theme
+```
+
 ## Layout of this repository
 
 ```

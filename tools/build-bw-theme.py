@@ -22,12 +22,16 @@ Usage:
     python3 build-bw-theme.py <template.png> ~/.local/share/bezel/themes/bw-vertical-8.8
 
 The vendor artwork stays the vendor's; the theme.json and this script are ours.
+The background is flattened onto black on the way in: on the panel a frame is
+an image with alpha, so transparent artwork would show the previous theme
+through it.
 """
 
 import json
 import pathlib
-import shutil
 import sys
+
+from PIL import Image
 
 LABEL_COLOUR = "#f3f5faff"
 DIM_COLOUR = "#9aa0a6ff"
@@ -114,6 +118,21 @@ ROWS = [
 ]
 
 
+def flatten(template: pathlib.Path, size: tuple[int, int]) -> Image.Image:
+    """The template as an opaque picture of exactly the canvas' size.
+
+    The vendor file is 481x1921 and has transparent pixels. Both matter: the
+    panel draws every frame as an image and honours its alpha, so a transparent
+    background lets the *previous* theme show through and the theme looks broken
+    on top of whatever was there before. Black is what the vendor app drew
+    behind this layout.
+    """
+    picture = Image.open(template).convert("RGBA").crop((0, 0, size[0], size[1]))
+    flat = Image.new("RGB", size, (0, 0, 0))
+    flat.paste(picture, (0, 0), picture)
+    return flat
+
+
 def main(template: str, output: str) -> int:
     template_path = pathlib.Path(template)
     if not template_path.is_file():
@@ -122,7 +141,7 @@ def main(template: str, output: str) -> int:
     folder = pathlib.Path(output)
     assets = folder / "assets"
     assets.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(template_path, assets / "background.png")
+    flatten(template_path, (480, 1920)).save(assets / "background.png")
 
     elements = []
     for index, (name, x, y, width, height, kind) in enumerate(ROWS, start=1):
