@@ -173,9 +173,9 @@ world of Turing/TURZX screens is reachable:
 
 - [turing-smart-screen-python](https://github.com/mathoudebine/turing-smart-screen-python)
   ships themes under `res/themes/`; only the ones whose `theme.yaml` says
-  `DISPLAY_SIZE: 8.8"` are the right size, and of those only `Cyberpunk 2077
-  Vertical` and `Gradient` stand up (the rest are 1920×480, for a screen lying
-  down);
+  `DISPLAY_SIZE: 8.8"` are the right size, and of those only `Gradient`,
+  `Cyberpunk 2077 Vertical` and `Simple Future Purple Vertical` stand up (the
+  rest are 1920×480, for a screen lying down);
 - `.turtheme` files (the vendor TURZX app's format) import too —
   [TurzxThemeToolkit](https://github.com/breacasu/TurzxThemeToolkit) and
   [davidfdr/turzx-themes](https://github.com/davidfdr/turzx-themes) are sources;
@@ -193,8 +193,8 @@ world of Turing/TURZX screens is reachable:
 cd ~/.local/share/bezel/themes
 git clone --depth 1 --filter=blob:none --sparse \
   https://github.com/mathoudebine/turing-smart-screen-python /tmp/tsx
-cd /tmp/tsx && git sparse-checkout set 'res/themes/Cyberpunk 2077 Vertical'
-bezel import 'res/themes/Cyberpunk 2077 Vertical' --output ~/.local/share/bezel/themes/tsx-cyberpunk-vertical-8.8
+cd /tmp/tsx && git sparse-checkout set 'res/themes/Gradient'
+bezel import 'res/themes/Gradient' --output ~/.local/share/bezel/themes/tsx-gradient-8.8
 rm -rf /tmp/tsx
 ```
 
