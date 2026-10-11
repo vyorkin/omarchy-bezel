@@ -1396,11 +1396,14 @@ Panel {
       textFormat: Text.PlainText
     }
 
-    MouseArea {
-      anchors.fill: parent
-      hoverEnabled: true
+    // A MouseArea declared inside a layout cannot anchor to it: the layout
+    // assigns the child's geometry, so anchors.fill: parent is undefined
+    // behaviour and Qt logs a warning per instance. A TapHandler sits on the
+    // row itself instead — no layout child, and a click anywhere in the row
+    // still steps through the choices.
+    TapHandler {
       acceptedButtons: Qt.LeftButton
-      onClicked: option.picked()
+      onTapped: option.picked()
     }
   }
 
