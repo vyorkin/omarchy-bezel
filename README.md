@@ -10,7 +10,7 @@ when the panel is off, the outline is left hollow.
 | Target | How |
 |---|---|
 | The theme on the screen | the theme's own launcher when it has one, otherwise `bezel-run@<theme>` — the same systemd user unit `bezel` documents for starting a theme at login |
-| The backlight | `bezel brightness <percent>` |
+| The backlight | `bezel brightness <percent>`, with the theme's launcher paused for the write |
 | Refresh rate, orientation | `refreshSeconds` and `orientation` in the theme's `theme.json` |
 | Element visibility, opacity, text size | `visible`, `opacity` and `kind.style.size` of one element |
 | Every colour in a theme | any `#rrggbbaa` in the theme, gradient stops included, painted from the current Omarchy palette |
@@ -164,6 +164,11 @@ A path in `set` is the dotted path inside `theme.json`, which is exactly what
 
 Only one program may drive the screen at a time. If Bezel Studio has **Live** on,
 turn it off before picking a theme here; otherwise the second process is refused.
+The backlight is that same port: against a live theme `bezel brightness` comes
+back as `interface is busy` (errno 16), so the helper stops the launcher, sends
+the level and starts the launcher again. That costs the theme a restart, which is
+why the widget's slider writes when the knob is let go and only draws while it is
+being dragged.
 The RGB Control widget, which also talks to the panel, only sets its backlight.
 
 ## Where more themes come from

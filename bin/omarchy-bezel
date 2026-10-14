@@ -883,9 +883,35 @@ def brightness(percent: int | None) -> dict:
     binary = shutil_which("bezel")
     if not binary:
         raise CliError("bezel is not on the PATH")
+    # One program holds the screen's port, and a theme's launcher is that program
+    # for as long as the theme is on: `bezel brightness` is refused with `interface
+    # is busy` against a live theme. The backlight is level with the frames, not a
+    # stream of its own, so the only way to send it is to pause the theme, send the
+    # level and put the theme back — which is why the widget commits on release.
+    live = [(name, unit) for name, unit, state in launcher_states() if state == "active"]
+    stopped = [unit for _, unit in live]
+    streamed = any(launcher_unit(name) is not None for name, _ in live)
+    for unit in stopped:
+        # stop, not disable: the theme stays the one that comes back at login.
+        systemctl("stop", unit)
+    if stopped:
+        wait_until_inactive(stopped)
     result = subprocess.run(
         [binary, "brightness", str(percent)], capture_output=True, text=True, timeout=30
     )
+    if stopped:
+        # A streamed theme leaves the screen playing its last frame; `storage
+        # stop` is what lets the restarted launcher draw again.
+        if streamed:
+            clear_screen_playback()
+        for unit in stopped:
+            reset_failed(unit)
+            systemctl("start", unit)
+        if not all(wait_until_active(unit) for unit in stopped):
+            raise CliError(
+                f"the backlight is at {percent}%, but the theme did not come back: "
+                + ", ".join(f"journalctl --user -u {unit}" for unit in stopped)
+            )
     if result.returncode != 0:
         raise CliError((result.stderr or "bezel brightness failed").strip())
     # A backlight of zero is the widget's idea of "off"; any level switches it on.
@@ -893,7 +919,7 @@ def brightness(percent: int | None) -> dict:
         write_state({"off": True})
     else:
         write_state({"brightness": percent, "off": False})
-    return {"brightness": percent}
+    return {"brightness": percent, "paused": stopped}
 
 
 def apply_changes(name: str, specs: list[str], restart: bool) -> dict:

@@ -389,6 +389,12 @@ Panel {
     })
   }
 
+  // Sending a level costs the theme a pause and a restart, so a drag only moves
+  // the number on screen; the write waits for the knob to be let go.
+  function previewBrightness(percent) {
+    root.brightness = Math.max(0, Math.min(100, Math.round(percent)))
+  }
+
   function setBrightness(percent) {
     percent = Math.max(0, Math.min(100, Math.round(percent)))
     root.brightness = percent
@@ -755,7 +761,7 @@ Panel {
           step: 1
           integer: true
           value: root.brightness
-          onMoved: function(value) { root.setBrightness(value) }
+          onMoved: function(value) { root.previewBrightness(value) }
           onReleased: function(value) { root.setBrightness(value) }
         }
 
