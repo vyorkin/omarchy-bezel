@@ -401,6 +401,12 @@ Panel {
     root.edit("brightness=" + percent)
   }
 
+  // Same as the backlight: a write restarts the theme that is on the screen, so
+  // the value only moves while the knob is held and goes out when it is let go.
+  function previewRefresh(seconds) {
+    root.refreshSeconds = Math.max(0.25, Math.min(10, Math.round(seconds * 20) / 20))
+  }
+
   function setRefresh(seconds) {
     root.refreshSeconds = Math.max(0.25, Math.min(10, Math.round(seconds * 20) / 20))
     root.edit("refresh=" + root.refreshSeconds)
@@ -795,7 +801,7 @@ Panel {
           maximum: 5
           step: 0.05
           value: root.refreshSeconds
-          onMoved: function(value) { root.setRefresh(value) }
+          onMoved: function(value) { root.previewRefresh(value) }
           onReleased: function(value) { root.setRefresh(value) }
         }
 
